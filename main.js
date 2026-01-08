@@ -707,7 +707,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.cloudProviders.r2.enabled = !!(url && this.plugin.settings.cloudProviders.r2.apiKey);
       await this.plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("API Key").setDesc("API_KEY from Cloudflare Worker Variables").addText((text) => text.setPlaceholder("D3BEAC4F-2C3F-4823-...").setValue(this.plugin.settings.cloudProviders.r2.apiKey).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("API Key").setDesc("API_KEY from Cloudflare Worker Variables").addText((text) => text.setPlaceholder("your-api-key-here").setValue(this.plugin.settings.cloudProviders.r2.apiKey).onChange(async (value) => {
       this.plugin.settings.cloudProviders.r2.apiKey = value.trim();
       this.plugin.settings.cloudProviders.r2.enabled = !!(this.plugin.settings.cloudProviders.r2.workerUrl && value.trim());
       await this.plugin.saveSettings();

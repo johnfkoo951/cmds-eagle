@@ -154,7 +154,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 			.setName('API Key')
 			.setDesc('API_KEY from Cloudflare Worker Variables')
 			.addText(text => text
-				.setPlaceholder('D3BEAC4F-2C3F-4823-...')
+				.setPlaceholder('your-api-key-here')
 				.setValue(this.plugin.settings.cloudProviders.r2.apiKey)
 				.onChange(async (value) => {
 					this.plugin.settings.cloudProviders.r2.apiKey = value.trim();
