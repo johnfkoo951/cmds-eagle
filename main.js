@@ -219,6 +219,15 @@ var EagleApiService = class {
       return null;
     }
   }
+  async getLibraryPath() {
+    try {
+      const response = await this.get("/api/library/info");
+      const data = response.data;
+      return (data == null ? void 0 : data.library) || (data == null ? void 0 : data.path) || null;
+    } catch (e) {
+      return null;
+    }
+  }
   async refreshThumbnail(id) {
     try {
       const response = await this.post("/api/item/refreshThumbnail", { id });
@@ -246,11 +255,16 @@ var EagleApiService = class {
   }
   async getOriginalFilePath(item) {
     const thumbnailPath = await this.getThumbnailPath(item.id);
-    if (!thumbnailPath)
+    if (!thumbnailPath) {
+      console.log("[CMDS Eagle] getThumbnailPath returned null for item:", item.id);
       return null;
+    }
+    console.log("[CMDS Eagle] thumbnailPath:", thumbnailPath);
     const decodedPath = this.safeDecodeUri(thumbnailPath);
     const folderPath = decodedPath.substring(0, decodedPath.lastIndexOf("/"));
-    return `${folderPath}/${item.name}.${item.ext}`;
+    const originalPath = `${folderPath}/${item.name}.${item.ext}`;
+    console.log("[CMDS Eagle] originalPath:", originalPath);
+    return originalPath;
   }
   safeDecodeUri(str) {
     try {
@@ -654,6 +668,11 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     containerEl.createEl("h3", { text: "Image Paste/Drop Behavior" });
     new import_obsidian3.Setting(containerEl).setName("Default image behavior").setDesc("What to do when pasting or dropping images").addDropdown((dropdown) => dropdown.addOption("ask", "Ask every time").addOption("eagle", "Always upload to Eagle (local)").addOption("local", "Always save to vault (local)").addOption("cloud", "Always upload to cloud").setValue(this.plugin.settings.imagePasteBehavior).onChange(async (value) => {
       this.plugin.settings.imagePasteBehavior = value;
+      await this.plugin.saveSettings();
+    }));
+    containerEl.createEl("h3", { text: "Search & Embed" });
+    new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc("Add metadata (type, size, tags, Eagle link) below the image when embedding").addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
+      this.plugin.settings.insertThumbnail = value;
       await this.plugin.saveSettings();
     }));
     containerEl.createEl("h3", { text: "Cloud Storage Provider" });

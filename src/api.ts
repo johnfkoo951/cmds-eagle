@@ -168,6 +168,16 @@ export class EagleApiService {
 		}
 	}
 
+	async getLibraryPath(): Promise<string | null> {
+		try {
+			const response = await this.get<{ library: string }>('/api/library/info');
+			const data = response.data as unknown as { library?: string; path?: string };
+			return data?.library || data?.path || null;
+		} catch {
+			return null;
+		}
+	}
+
 	async refreshThumbnail(id: string): Promise<boolean> {
 		try {
 			const response = await this.post<null>('/api/item/refreshThumbnail', { id });
@@ -197,11 +207,19 @@ export class EagleApiService {
 
 	async getOriginalFilePath(item: EagleItem): Promise<string | null> {
 		const thumbnailPath = await this.getThumbnailPath(item.id);
-		if (!thumbnailPath) return null;
+		if (!thumbnailPath) {
+			console.log('[CMDS Eagle] getThumbnailPath returned null for item:', item.id);
+			return null;
+		}
 
+		console.log('[CMDS Eagle] thumbnailPath:', thumbnailPath);
+		
 		const decodedPath = this.safeDecodeUri(thumbnailPath);
 		const folderPath = decodedPath.substring(0, decodedPath.lastIndexOf('/'));
-		return `${folderPath}/${item.name}.${item.ext}`;
+		const originalPath = `${folderPath}/${item.name}.${item.ext}`;
+		
+		console.log('[CMDS Eagle] originalPath:', originalPath);
+		return originalPath;
 	}
 
 	private safeDecodeUri(str: string): string {

@@ -75,6 +75,18 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		containerEl.createEl('h3', { text: 'Search & Embed' });
+
+		new Setting(containerEl)
+			.setName('Include metadata card')
+			.setDesc('Add metadata (type, size, tags, Eagle link) below the image when embedding')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.insertThumbnail)
+				.onChange(async (value) => {
+					this.plugin.settings.insertThumbnail = value;
+					await this.plugin.saveSettings();
+				}));
+
 		containerEl.createEl('h3', { text: 'Cloud Storage Provider' });
 
 		new Setting(containerEl)
