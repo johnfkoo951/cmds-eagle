@@ -663,6 +663,15 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.display();
     }));
     this.renderCloudProviderSettings(containerEl);
+    containerEl.createEl("hr", { attr: { style: "margin: 24px 0; border: none; border-top: 1px solid var(--background-modifier-border);" } });
+    const footerEl = containerEl.createEl("div", { attr: { style: "text-align: center; color: var(--text-muted); font-size: 12px;" } });
+    footerEl.createEl("div", { text: `CMDS Eagle v${this.plugin.manifest.version}`, attr: { style: "margin-bottom: 8px;" } });
+    const linksEl = footerEl.createEl("div");
+    const eduLink = linksEl.createEl("a", { text: "CMDSPACE Education", href: "https://class.cmdspace.kr/" });
+    eduLink.setAttr("target", "_blank");
+    linksEl.createSpan({ text: " \xB7 " });
+    const ytLink = linksEl.createEl("a", { text: "YouTube", href: "https://www.youtube.com/@cmdspace" });
+    ytLink.setAttr("target", "_blank");
   }
   renderCloudProviderSettings(containerEl) {
     const provider = this.plugin.settings.activeCloudProvider;
