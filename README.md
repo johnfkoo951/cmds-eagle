@@ -55,12 +55,13 @@ When pasting or dropping images, choose where to save them.
 Upload images to cloud storage for sharing and portability.
 
 ![Cloud Upload](assets/CMDS-eagle5.gif)
+![Paste Options](assets/CMDS-eagle4.gif)
 
 ## Settings
 
 Configure your preferred cloud provider and search defaults.
 
-![Paste Options](assets/CMDS-eagle4.gif)
+
 ![Settings](assets/CMDS-eagle6.png)
 
 ## Cloud Providers
