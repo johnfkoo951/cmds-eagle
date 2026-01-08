@@ -7,20 +7,36 @@ import {
 	Modal,
 	Setting,
 } from 'obsidian';
-import { EagleItem, CMDSPACEEagleSettings, ImagePasteBehavior } from './types';
+import { 
+	EagleItem, 
+	CMDSPACEEagleSettings, 
+	ImagePasteBehavior,
+	SearchScope,
+	SUPPORTED_IMAGE_EXTENSIONS,
+	SUPPORTED_VIDEO_EXTENSIONS,
+	SUPPORTED_DOCUMENT_EXTENSIONS,
+} from './types';
 import { EagleApiService, buildEagleItemUrl } from './api';
+
+type FileTypeCategory = 'images' | 'videos' | 'documents' | 'all';
 
 export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	private api: EagleApiService;
 	private settings: CMDSPACEEagleSettings;
-	private items: EagleItem[] = [];
+	private allItems: EagleItem[] = [];
 	private isLoading = false;
+	private activeScopes: Set<SearchScope>;
+	private activeFileTypes: Set<string>;
+	private filterContainer: HTMLElement | null = null;
+	private libraryNameEl: HTMLElement | null = null;
 
 	constructor(app: App, api: EagleApiService, settings: CMDSPACEEagleSettings) {
 		super(app);
 		this.api = api;
 		this.settings = settings;
-		this.setPlaceholder('Search Eagle items by name, tags...');
+		this.activeScopes = new Set(settings.searchScope);
+		this.activeFileTypes = new Set(settings.searchFileTypes);
+		this.setPlaceholder('Search Eagle items...');
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
 			{ command: '↵', purpose: 'insert link' },
@@ -30,7 +46,125 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 
 	async onOpen(): Promise<void> {
 		super.onOpen();
+		this.buildFilterUI();
 		await this.loadItems();
+	}
+
+	private buildFilterUI(): void {
+		const promptEl = this.modalEl.querySelector('.prompt');
+		if (!promptEl) return;
+
+		this.filterContainer = createDiv({ cls: 'cmdspace-eagle-filters' });
+		promptEl.insertBefore(this.filterContainer, promptEl.firstChild);
+
+		const headerRow = this.filterContainer.createDiv({ cls: 'cmdspace-eagle-filter-header' });
+		this.libraryNameEl = headerRow.createSpan({ cls: 'cmdspace-eagle-library-name', text: 'Loading...' });
+
+		const scopeRow = this.filterContainer.createDiv({ cls: 'cmdspace-eagle-filter-row' });
+		scopeRow.createSpan({ text: 'Search in:', cls: 'cmdspace-eagle-filter-label' });
+		
+		const scopeButtons = scopeRow.createDiv({ cls: 'cmdspace-eagle-filter-buttons' });
+		this.createScopeButton(scopeButtons, 'name', 'Name');
+		this.createScopeButton(scopeButtons, 'tags', 'Tags');
+		this.createScopeButton(scopeButtons, 'annotation', 'Notes');
+		this.createScopeButton(scopeButtons, 'folders', 'Folders');
+
+		const typeRow = this.filterContainer.createDiv({ cls: 'cmdspace-eagle-filter-row' });
+		typeRow.createSpan({ text: 'File types:', cls: 'cmdspace-eagle-filter-label' });
+		
+		const typeButtons = typeRow.createDiv({ cls: 'cmdspace-eagle-filter-buttons' });
+		this.createTypeButton(typeButtons, 'images', 'Images');
+		this.createTypeButton(typeButtons, 'videos', 'Videos');
+		this.createTypeButton(typeButtons, 'documents', 'Docs');
+		this.createTypeButton(typeButtons, 'all', 'All');
+	}
+
+	private createScopeButton(container: HTMLElement, scope: SearchScope, label: string): void {
+		const btn = container.createEl('button', { 
+			text: label,
+			cls: `cmdspace-eagle-filter-btn ${this.activeScopes.has(scope) ? 'is-active' : ''}`
+		});
+		btn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (this.activeScopes.has(scope)) {
+				if (this.activeScopes.size > 1) {
+					this.activeScopes.delete(scope);
+					btn.removeClass('is-active');
+				}
+			} else {
+				this.activeScopes.add(scope);
+				btn.addClass('is-active');
+			}
+			this.inputEl.dispatchEvent(new Event('input'));
+		});
+	}
+
+	private createTypeButton(container: HTMLElement, category: FileTypeCategory, label: string): void {
+		const isActive = this.isTypeCategoryActive(category);
+		const btn = container.createEl('button', { 
+			text: label,
+			cls: `cmdspace-eagle-filter-btn ${isActive ? 'is-active' : ''}`
+		});
+		btn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.toggleTypeCategory(category);
+			this.updateTypeButtonStates(container.parentElement!);
+			this.inputEl.dispatchEvent(new Event('input'));
+		});
+	}
+
+	private isTypeCategoryActive(category: FileTypeCategory): boolean {
+		const extensions = this.getExtensionsForCategory(category);
+		return extensions.some(ext => this.activeFileTypes.has(ext));
+	}
+
+	private getExtensionsForCategory(category: FileTypeCategory): readonly string[] {
+		switch (category) {
+			case 'images': return SUPPORTED_IMAGE_EXTENSIONS;
+			case 'videos': return SUPPORTED_VIDEO_EXTENSIONS;
+			case 'documents': return SUPPORTED_DOCUMENT_EXTENSIONS;
+			case 'all': return [...SUPPORTED_IMAGE_EXTENSIONS, ...SUPPORTED_VIDEO_EXTENSIONS, ...SUPPORTED_DOCUMENT_EXTENSIONS];
+		}
+	}
+
+	private toggleTypeCategory(category: FileTypeCategory): void {
+		const extensions = this.getExtensionsForCategory(category);
+		const isCurrentlyActive = this.isTypeCategoryActive(category);
+
+		if (category === 'all') {
+			if (isCurrentlyActive) {
+				this.activeFileTypes = new Set(SUPPORTED_IMAGE_EXTENSIONS);
+			} else {
+				this.activeFileTypes = new Set([
+					...SUPPORTED_IMAGE_EXTENSIONS,
+					...SUPPORTED_VIDEO_EXTENSIONS,
+					...SUPPORTED_DOCUMENT_EXTENSIONS
+				]);
+			}
+		} else {
+			if (isCurrentlyActive) {
+				extensions.forEach(ext => this.activeFileTypes.delete(ext));
+				if (this.activeFileTypes.size === 0) {
+					SUPPORTED_IMAGE_EXTENSIONS.forEach(ext => this.activeFileTypes.add(ext));
+				}
+			} else {
+				extensions.forEach(ext => this.activeFileTypes.add(ext));
+			}
+		}
+	}
+
+	private updateTypeButtonStates(typeRow: HTMLElement): void {
+		const buttons = typeRow.querySelectorAll('.cmdspace-eagle-filter-btn');
+		const categories: FileTypeCategory[] = ['images', 'videos', 'documents', 'all'];
+		buttons.forEach((btn, idx) => {
+			if (this.isTypeCategoryActive(categories[idx])) {
+				btn.addClass('is-active');
+			} else {
+				btn.removeClass('is-active');
+			}
+		});
 	}
 
 	private async loadItems(): Promise<void> {
@@ -45,7 +179,19 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 				return;
 			}
 
-			this.items = await this.api.listItems({ limit: 500 });
+			const libraryName = await this.api.getLibraryName();
+			if (this.libraryNameEl && libraryName) {
+				this.libraryNameEl.setText(`📚 ${libraryName}`);
+			}
+
+			this.allItems = await this.api.listItems();
+			
+			if (this.libraryNameEl) {
+				const count = this.allItems.length;
+				const libraryText = libraryName ? `📚 ${libraryName}` : '📚 Eagle';
+				this.libraryNameEl.setText(`${libraryText} (${count.toLocaleString()} items)`);
+			}
+			
 			this.inputEl.dispatchEvent(new Event('input'));
 		} catch (error) {
 			console.error('Failed to load Eagle items:', error);
@@ -56,13 +202,28 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	}
 
 	getItems(): EagleItem[] {
-		return this.items;
+		return this.allItems.filter(item => 
+			this.activeFileTypes.has(item.ext.toLowerCase())
+		);
 	}
 
 	getItemText(item: EagleItem): string {
-		const tags = item.tags.length > 0 ? ` [${item.tags.join(', ')}]` : '';
-		const folders = item.folders.length > 0 ? ` /${item.folders.join('/')}` : '';
-		return `${item.name}${tags}${folders}`;
+		const parts: string[] = [];
+		
+		if (this.activeScopes.has('name')) {
+			parts.push(item.name);
+		}
+		if (this.activeScopes.has('tags') && item.tags.length > 0) {
+			parts.push(item.tags.join(' '));
+		}
+		if (this.activeScopes.has('annotation') && item.annotation) {
+			parts.push(item.annotation);
+		}
+		if (this.activeScopes.has('folders') && item.folders.length > 0) {
+			parts.push(item.folders.join('/'));
+		}
+		
+		return parts.join(' ') || item.name;
 	}
 
 	renderSuggestion(match: FuzzyMatch<EagleItem>, el: HTMLElement): void {

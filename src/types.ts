@@ -86,6 +86,22 @@ export interface EagleApplicationInfo {
 
 export type ImagePasteBehavior = 'eagle' | 'local' | 'cloud' | 'ask';
 
+export type SearchScope = 'name' | 'tags' | 'annotation' | 'folders';
+
+export const SUPPORTED_IMAGE_EXTENSIONS = [
+	'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 
+	'tiff', 'tif', 'heic', 'heif', 'avif', 'ico'
+] as const;
+
+export const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'avi', 'mkv'] as const;
+
+export const SUPPORTED_DOCUMENT_EXTENSIONS = ['pdf', 'psd', 'ai', 'sketch'] as const;
+
+export type SupportedExtension = 
+	| typeof SUPPORTED_IMAGE_EXTENSIONS[number] 
+	| typeof SUPPORTED_VIDEO_EXTENSIONS[number]
+	| typeof SUPPORTED_DOCUMENT_EXTENSIONS[number];
+
 export type CloudProviderType = 'r2' | 's3' | 'webdav' | 'imghippo' | 'custom';
 
 export interface CloudProviderConfig {
@@ -161,6 +177,8 @@ export interface CMDSPACEEagleSettings {
 	insertAsEmbed: boolean;
 	imagePasteBehavior: ImagePasteBehavior;
 	activeCloudProvider: CloudProviderType;
+	searchScope: SearchScope[];
+	searchFileTypes: string[];
 	cloudProviders: {
 		r2: R2ProviderConfig;
 		s3: S3ProviderConfig;
@@ -189,6 +207,8 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	insertAsEmbed: true,
 	imagePasteBehavior: 'ask',
 	activeCloudProvider: 'imghippo',
+	searchScope: ['name', 'tags'],
+	searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],
 	cloudProviders: {
 		r2: {
 			type: 'r2',

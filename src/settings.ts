@@ -1,7 +1,14 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import CMDSPACELinkEagle from './main';
 import { EagleApiService } from './api';
-import { CloudProviderType, ImagePasteBehavior } from './types';
+import { 
+	CloudProviderType, 
+	ImagePasteBehavior,
+	SearchScope,
+	SUPPORTED_IMAGE_EXTENSIONS,
+	SUPPORTED_VIDEO_EXTENSIONS,
+	SUPPORTED_DOCUMENT_EXTENSIONS,
+} from './types';
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	plugin: CMDSPACELinkEagle;
@@ -86,6 +93,8 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					this.plugin.settings.insertThumbnail = value;
 					await this.plugin.saveSettings();
 				}));
+
+		this.renderSearchFiltersSettings(containerEl);
 
 		containerEl.createEl('h3', { text: 'Cloud Storage Provider' });
 
@@ -399,5 +408,128 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					this.plugin.settings.cloudProviders.custom.publicUrl = value.trim();
 					await this.plugin.saveSettings();
 				}));
+	}
+
+	private renderSearchFiltersSettings(containerEl: HTMLElement): void {
+		const filterContainer = containerEl.createDiv({ cls: 'cmdspace-eagle-settings-filters' });
+		
+		const scopeSection = filterContainer.createDiv({ cls: 'cmdspace-eagle-settings-filter-section' });
+		scopeSection.createEl('div', { text: 'Default search scope', cls: 'cmdspace-eagle-settings-filter-title' });
+		const scopeButtons = scopeSection.createDiv({ cls: 'cmdspace-eagle-settings-filter-buttons' });
+		
+		const scopes: { key: SearchScope; label: string }[] = [
+			{ key: 'name', label: 'Name' },
+			{ key: 'tags', label: 'Tags' },
+			{ key: 'annotation', label: 'Notes' },
+			{ key: 'folders', label: 'Folders' },
+		];
+		
+		scopes.forEach(({ key, label }) => {
+			const btn = scopeButtons.createEl('button', {
+				text: label,
+				cls: `cmdspace-eagle-settings-filter-btn ${this.plugin.settings.searchScope.includes(key) ? 'is-active' : ''}`
+			});
+			btn.addEventListener('click', async () => {
+				if (this.plugin.settings.searchScope.includes(key)) {
+					if (this.plugin.settings.searchScope.length > 1) {
+						this.plugin.settings.searchScope = this.plugin.settings.searchScope.filter(s => s !== key);
+						btn.removeClass('is-active');
+					}
+				} else {
+					this.plugin.settings.searchScope.push(key);
+					btn.addClass('is-active');
+				}
+				await this.plugin.saveSettings();
+			});
+		});
+
+		const typeSection = filterContainer.createDiv({ cls: 'cmdspace-eagle-settings-filter-section' });
+		typeSection.createEl('div', { text: 'Default file types', cls: 'cmdspace-eagle-settings-filter-title' });
+		const typeButtons = typeSection.createDiv({ cls: 'cmdspace-eagle-settings-filter-buttons' });
+		
+		const hasAllImages = () => SUPPORTED_IMAGE_EXTENSIONS.every(ext => 
+			this.plugin.settings.searchFileTypes.includes(ext)
+		);
+		const hasAllVideos = () => SUPPORTED_VIDEO_EXTENSIONS.every(ext => 
+			this.plugin.settings.searchFileTypes.includes(ext)
+		);
+		const hasAllDocs = () => SUPPORTED_DOCUMENT_EXTENSIONS.every(ext => 
+			this.plugin.settings.searchFileTypes.includes(ext)
+		);
+
+		const imgBtn = typeButtons.createEl('button', {
+			text: 'Images',
+			cls: `cmdspace-eagle-settings-filter-btn ${hasAllImages() ? 'is-active' : ''}`
+		});
+		imgBtn.addEventListener('click', async () => {
+			if (hasAllImages()) {
+				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+					ext => !SUPPORTED_IMAGE_EXTENSIONS.includes(ext as typeof SUPPORTED_IMAGE_EXTENSIONS[number])
+				);
+				imgBtn.removeClass('is-active');
+			} else {
+				SUPPORTED_IMAGE_EXTENSIONS.forEach(ext => {
+					if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+						this.plugin.settings.searchFileTypes.push(ext);
+					}
+				});
+				imgBtn.addClass('is-active');
+			}
+			if (this.plugin.settings.searchFileTypes.length === 0) {
+				this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+				imgBtn.addClass('is-active');
+			}
+			await this.plugin.saveSettings();
+		});
+
+		const vidBtn = typeButtons.createEl('button', {
+			text: 'Videos',
+			cls: `cmdspace-eagle-settings-filter-btn ${hasAllVideos() ? 'is-active' : ''}`
+		});
+		vidBtn.addEventListener('click', async () => {
+			if (hasAllVideos()) {
+				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+					ext => !SUPPORTED_VIDEO_EXTENSIONS.includes(ext as typeof SUPPORTED_VIDEO_EXTENSIONS[number])
+				);
+				vidBtn.removeClass('is-active');
+			} else {
+				SUPPORTED_VIDEO_EXTENSIONS.forEach(ext => {
+					if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+						this.plugin.settings.searchFileTypes.push(ext);
+					}
+				});
+				vidBtn.addClass('is-active');
+			}
+			if (this.plugin.settings.searchFileTypes.length === 0) {
+				this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+				imgBtn.addClass('is-active');
+			}
+			await this.plugin.saveSettings();
+		});
+
+		const docBtn = typeButtons.createEl('button', {
+			text: 'Documents',
+			cls: `cmdspace-eagle-settings-filter-btn ${hasAllDocs() ? 'is-active' : ''}`
+		});
+		docBtn.addEventListener('click', async () => {
+			if (hasAllDocs()) {
+				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+					ext => !SUPPORTED_DOCUMENT_EXTENSIONS.includes(ext as typeof SUPPORTED_DOCUMENT_EXTENSIONS[number])
+				);
+				docBtn.removeClass('is-active');
+			} else {
+				SUPPORTED_DOCUMENT_EXTENSIONS.forEach(ext => {
+					if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+						this.plugin.settings.searchFileTypes.push(ext);
+					}
+				});
+				docBtn.addClass('is-active');
+			}
+			if (this.plugin.settings.searchFileTypes.length === 0) {
+				this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+				imgBtn.addClass('is-active');
+			}
+			await this.plugin.saveSettings();
+		});
 	}
 }

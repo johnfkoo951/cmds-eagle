@@ -2,6 +2,8 @@
 
 Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your vault.
 
+![Search and Embed](assets/CMDS-eagle1.gif)
+
 ## Features
 
 - **Search & Embed**: Search Eagle library and embed images directly into notes
@@ -30,6 +32,36 @@ Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your v
 - [Eagle](https://eagle.cool) app running locally
 - Obsidian 1.5.0+
 
+## Usage
+
+### Search & Embed
+
+Search your Eagle library and embed images directly into notes.
+
+![Search Modal](assets/CMDS-eagle2.gif)
+
+![Search Results](assets/CMDS-eagle3.png)
+
+### Image Paste/Drop
+
+When pasting or dropping images, choose where to save them.
+
+![Paste Options](assets/CMDS-eagle4.gif)
+
+### Cloud Upload
+
+Upload images to cloud storage for sharing and portability.
+
+![Cloud Upload](assets/CMDS-eagle5.gif)
+
+## Settings
+
+Configure your preferred cloud provider and search defaults.
+
+![Settings](assets/CMDS-eagle6.png)
+
+![Cloud Settings](assets/CMDS-eagle7.png)
+
 ## Cloud Providers
 
 | Provider | Setup |
@@ -41,10 +73,12 @@ Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your v
 
 ## Commands
 
-- `Search Eagle library and embed` - Open search modal
-- `Upload clipboard Eagle image to cloud` - Upload from clipboard
-- `Embed Eagle image and upload to cloud` - Embed + upload in one step
-- `Convert all images in note to cloud URLs` - Batch convert local images
+| Command | Description |
+|---------|-------------|
+| `Search Eagle library and embed` | Open search modal |
+| `Upload clipboard Eagle image to cloud` | Upload from clipboard |
+| `Embed Eagle image and upload to cloud` | Embed + upload in one step |
+| `Convert all images in note to cloud URLs` | Batch convert local images |
 
 ## License
 

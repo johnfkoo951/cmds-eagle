@@ -27,6 +27,9 @@ function getMimeType(ext: string): string {
 		'ico': 'image/x-icon',
 		'tiff': 'image/tiff',
 		'tif': 'image/tiff',
+		'heic': 'image/heic',
+		'heif': 'image/heif',
+		'avif': 'image/avif',
 		'pdf': 'application/pdf',
 	};
 	return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';

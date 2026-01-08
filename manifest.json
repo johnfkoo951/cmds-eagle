@@ -1,11 +1,11 @@
 {
-	"id": "cmds-eagle",
-	"name": "CMDS Eagle",
-	"version": "1.3.2",
-	"minAppVersion": "1.5.0",
-	"description": "Connect Eagle asset library to Obsidian. Search, embed, and upload images to cloud (ImgHippo, R2, S3, WebDAV).",
-	"author": "Yohan Koo",
-	"authorUrl": "https://github.com/yohankoo",
-	"isDesktopOnly": true,
-	"fundingUrl": "https://github.com/sponsors/yohankoo"
+  "id": "cmds-eagle",
+  "name": "CMDS Eagle",
+  "version": "1.4.0",
+  "minAppVersion": "1.5.0",
+  "description": "Connect Eagle asset library to Obsidian. Search, embed, and upload images to cloud (ImgHippo, R2, S3, WebDAV).",
+  "author": "Yohan Koo",
+  "authorUrl": "https://github.com/yohankoo",
+  "isDesktopOnly": true,
+  "fundingUrl": "https://github.com/sponsors/yohankoo"
 }

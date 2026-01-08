@@ -30,6 +30,23 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
 // src/types.ts
+var SUPPORTED_IMAGE_EXTENSIONS = [
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "bmp",
+  "svg",
+  "tiff",
+  "tif",
+  "heic",
+  "heif",
+  "avif",
+  "ico"
+];
+var SUPPORTED_VIDEO_EXTENSIONS = ["mp4", "mov", "webm", "avi", "mkv"];
+var SUPPORTED_DOCUMENT_EXTENSIONS = ["pdf", "psd", "ai", "sketch"];
 var DEFAULT_SETTINGS = {
   eagleApiBaseUrl: "http://localhost:41595",
   connectionTimeout: 5e3,
@@ -49,6 +66,8 @@ var DEFAULT_SETTINGS = {
   insertAsEmbed: true,
   imagePasteBehavior: "ask",
   activeCloudProvider: "imghippo",
+  searchScope: ["name", "tags"],
+  searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],
   cloudProviders: {
     r2: {
       type: "r2",
@@ -227,7 +246,6 @@ var EagleApiService = class {
         method: "GET"
       });
       const json = response.json;
-      console.log("[CMDS Eagle] library/info response:", JSON.stringify(json, null, 2));
       if ((json == null ? void 0 : json.status) === "success" && (json == null ? void 0 : json.data)) {
         const data = json.data;
         if (typeof data.library === "string") {
@@ -245,6 +263,17 @@ var EagleApiService = class {
       console.error("[CMDS Eagle] getLibraryPath error:", e);
       return null;
     }
+  }
+  async getLibraryName() {
+    var _a;
+    const path = await this.getLibraryPath();
+    if (!path)
+      return null;
+    const match = path.match(/([^/]+)\.library\/?$/i);
+    if (match) {
+      return match[1];
+    }
+    return ((_a = path.split("/").pop()) == null ? void 0 : _a.replace(".library", "")) || null;
   }
   async refreshThumbnail(id) {
     try {
@@ -440,7 +469,10 @@ var MIME_TYPES = {
   "bmp": "image/bmp",
   "ico": "image/x-icon",
   "tiff": "image/tiff",
-  "tif": "image/tiff"
+  "tif": "image/tiff",
+  "heic": "image/heic",
+  "heif": "image/heif",
+  "avif": "image/avif"
 };
 function getMimeType(ext) {
   return MIME_TYPES[ext.toLowerCase()] || "application/octet-stream";
@@ -451,11 +483,15 @@ var import_obsidian2 = require("obsidian");
 var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
   constructor(app, api, settings) {
     super(app);
-    this.items = [];
+    this.allItems = [];
     this.isLoading = false;
+    this.filterContainer = null;
+    this.libraryNameEl = null;
     this.api = api;
     this.settings = settings;
-    this.setPlaceholder("Search Eagle items by name, tags...");
+    this.activeScopes = new Set(settings.searchScope);
+    this.activeFileTypes = new Set(settings.searchFileTypes);
+    this.setPlaceholder("Search Eagle items...");
     this.setInstructions([
       { command: "\u2191\u2193", purpose: "navigate" },
       { command: "\u21B5", purpose: "insert link" },
@@ -464,7 +500,116 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
   }
   async onOpen() {
     super.onOpen();
+    this.buildFilterUI();
     await this.loadItems();
+  }
+  buildFilterUI() {
+    const promptEl = this.modalEl.querySelector(".prompt");
+    if (!promptEl)
+      return;
+    this.filterContainer = createDiv({ cls: "cmdspace-eagle-filters" });
+    promptEl.insertBefore(this.filterContainer, promptEl.firstChild);
+    const headerRow = this.filterContainer.createDiv({ cls: "cmdspace-eagle-filter-header" });
+    this.libraryNameEl = headerRow.createSpan({ cls: "cmdspace-eagle-library-name", text: "Loading..." });
+    const scopeRow = this.filterContainer.createDiv({ cls: "cmdspace-eagle-filter-row" });
+    scopeRow.createSpan({ text: "Search in:", cls: "cmdspace-eagle-filter-label" });
+    const scopeButtons = scopeRow.createDiv({ cls: "cmdspace-eagle-filter-buttons" });
+    this.createScopeButton(scopeButtons, "name", "Name");
+    this.createScopeButton(scopeButtons, "tags", "Tags");
+    this.createScopeButton(scopeButtons, "annotation", "Notes");
+    this.createScopeButton(scopeButtons, "folders", "Folders");
+    const typeRow = this.filterContainer.createDiv({ cls: "cmdspace-eagle-filter-row" });
+    typeRow.createSpan({ text: "File types:", cls: "cmdspace-eagle-filter-label" });
+    const typeButtons = typeRow.createDiv({ cls: "cmdspace-eagle-filter-buttons" });
+    this.createTypeButton(typeButtons, "images", "Images");
+    this.createTypeButton(typeButtons, "videos", "Videos");
+    this.createTypeButton(typeButtons, "documents", "Docs");
+    this.createTypeButton(typeButtons, "all", "All");
+  }
+  createScopeButton(container, scope, label) {
+    const btn = container.createEl("button", {
+      text: label,
+      cls: `cmdspace-eagle-filter-btn ${this.activeScopes.has(scope) ? "is-active" : ""}`
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.activeScopes.has(scope)) {
+        if (this.activeScopes.size > 1) {
+          this.activeScopes.delete(scope);
+          btn.removeClass("is-active");
+        }
+      } else {
+        this.activeScopes.add(scope);
+        btn.addClass("is-active");
+      }
+      this.inputEl.dispatchEvent(new Event("input"));
+    });
+  }
+  createTypeButton(container, category, label) {
+    const isActive = this.isTypeCategoryActive(category);
+    const btn = container.createEl("button", {
+      text: label,
+      cls: `cmdspace-eagle-filter-btn ${isActive ? "is-active" : ""}`
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleTypeCategory(category);
+      this.updateTypeButtonStates(container.parentElement);
+      this.inputEl.dispatchEvent(new Event("input"));
+    });
+  }
+  isTypeCategoryActive(category) {
+    const extensions = this.getExtensionsForCategory(category);
+    return extensions.some((ext) => this.activeFileTypes.has(ext));
+  }
+  getExtensionsForCategory(category) {
+    switch (category) {
+      case "images":
+        return SUPPORTED_IMAGE_EXTENSIONS;
+      case "videos":
+        return SUPPORTED_VIDEO_EXTENSIONS;
+      case "documents":
+        return SUPPORTED_DOCUMENT_EXTENSIONS;
+      case "all":
+        return [...SUPPORTED_IMAGE_EXTENSIONS, ...SUPPORTED_VIDEO_EXTENSIONS, ...SUPPORTED_DOCUMENT_EXTENSIONS];
+    }
+  }
+  toggleTypeCategory(category) {
+    const extensions = this.getExtensionsForCategory(category);
+    const isCurrentlyActive = this.isTypeCategoryActive(category);
+    if (category === "all") {
+      if (isCurrentlyActive) {
+        this.activeFileTypes = new Set(SUPPORTED_IMAGE_EXTENSIONS);
+      } else {
+        this.activeFileTypes = /* @__PURE__ */ new Set([
+          ...SUPPORTED_IMAGE_EXTENSIONS,
+          ...SUPPORTED_VIDEO_EXTENSIONS,
+          ...SUPPORTED_DOCUMENT_EXTENSIONS
+        ]);
+      }
+    } else {
+      if (isCurrentlyActive) {
+        extensions.forEach((ext) => this.activeFileTypes.delete(ext));
+        if (this.activeFileTypes.size === 0) {
+          SUPPORTED_IMAGE_EXTENSIONS.forEach((ext) => this.activeFileTypes.add(ext));
+        }
+      } else {
+        extensions.forEach((ext) => this.activeFileTypes.add(ext));
+      }
+    }
+  }
+  updateTypeButtonStates(typeRow) {
+    const buttons = typeRow.querySelectorAll(".cmdspace-eagle-filter-btn");
+    const categories = ["images", "videos", "documents", "all"];
+    buttons.forEach((btn, idx) => {
+      if (this.isTypeCategoryActive(categories[idx])) {
+        btn.addClass("is-active");
+      } else {
+        btn.removeClass("is-active");
+      }
+    });
   }
   async loadItems() {
     if (this.isLoading)
@@ -477,7 +622,16 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
         this.close();
         return;
       }
-      this.items = await this.api.listItems({ limit: 500 });
+      const libraryName = await this.api.getLibraryName();
+      if (this.libraryNameEl && libraryName) {
+        this.libraryNameEl.setText(`\u{1F4DA} ${libraryName}`);
+      }
+      this.allItems = await this.api.listItems();
+      if (this.libraryNameEl) {
+        const count = this.allItems.length;
+        const libraryText = libraryName ? `\u{1F4DA} ${libraryName}` : "\u{1F4DA} Eagle";
+        this.libraryNameEl.setText(`${libraryText} (${count.toLocaleString()} items)`);
+      }
       this.inputEl.dispatchEvent(new Event("input"));
     } catch (error) {
       console.error("Failed to load Eagle items:", error);
@@ -487,12 +641,25 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     }
   }
   getItems() {
-    return this.items;
+    return this.allItems.filter(
+      (item) => this.activeFileTypes.has(item.ext.toLowerCase())
+    );
   }
   getItemText(item) {
-    const tags = item.tags.length > 0 ? ` [${item.tags.join(", ")}]` : "";
-    const folders = item.folders.length > 0 ? ` /${item.folders.join("/")}` : "";
-    return `${item.name}${tags}${folders}`;
+    const parts = [];
+    if (this.activeScopes.has("name")) {
+      parts.push(item.name);
+    }
+    if (this.activeScopes.has("tags") && item.tags.length > 0) {
+      parts.push(item.tags.join(" "));
+    }
+    if (this.activeScopes.has("annotation") && item.annotation) {
+      parts.push(item.annotation);
+    }
+    if (this.activeScopes.has("folders") && item.folders.length > 0) {
+      parts.push(item.folders.join("/"));
+    }
+    return parts.join(" ") || item.name;
   }
   renderSuggestion(match, el) {
     const item = match.item;
@@ -699,6 +866,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.insertThumbnail = value;
       await this.plugin.saveSettings();
     }));
+    this.renderSearchFiltersSettings(containerEl);
     containerEl.createEl("h3", { text: "Cloud Storage Provider" });
     new import_obsidian3.Setting(containerEl).setName("Active Cloud Provider").setDesc("Select which cloud storage to use for image uploads").addDropdown((dropdown) => dropdown.addOption("r2", "Cloudflare R2").addOption("imghippo", "ImgHippo (Free)").addOption("s3", "Amazon S3").addOption("webdav", "WebDAV (Synology/NAS)").addOption("custom", "Custom Server").setValue(this.plugin.settings.activeCloudProvider).onChange(async (value) => {
       this.plugin.settings.activeCloudProvider = value;
@@ -867,6 +1035,120 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.plugin.saveSettings();
     }));
   }
+  renderSearchFiltersSettings(containerEl) {
+    const filterContainer = containerEl.createDiv({ cls: "cmdspace-eagle-settings-filters" });
+    const scopeSection = filterContainer.createDiv({ cls: "cmdspace-eagle-settings-filter-section" });
+    scopeSection.createEl("div", { text: "Default search scope", cls: "cmdspace-eagle-settings-filter-title" });
+    const scopeButtons = scopeSection.createDiv({ cls: "cmdspace-eagle-settings-filter-buttons" });
+    const scopes = [
+      { key: "name", label: "Name" },
+      { key: "tags", label: "Tags" },
+      { key: "annotation", label: "Notes" },
+      { key: "folders", label: "Folders" }
+    ];
+    scopes.forEach(({ key, label }) => {
+      const btn = scopeButtons.createEl("button", {
+        text: label,
+        cls: `cmdspace-eagle-settings-filter-btn ${this.plugin.settings.searchScope.includes(key) ? "is-active" : ""}`
+      });
+      btn.addEventListener("click", async () => {
+        if (this.plugin.settings.searchScope.includes(key)) {
+          if (this.plugin.settings.searchScope.length > 1) {
+            this.plugin.settings.searchScope = this.plugin.settings.searchScope.filter((s) => s !== key);
+            btn.removeClass("is-active");
+          }
+        } else {
+          this.plugin.settings.searchScope.push(key);
+          btn.addClass("is-active");
+        }
+        await this.plugin.saveSettings();
+      });
+    });
+    const typeSection = filterContainer.createDiv({ cls: "cmdspace-eagle-settings-filter-section" });
+    typeSection.createEl("div", { text: "Default file types", cls: "cmdspace-eagle-settings-filter-title" });
+    const typeButtons = typeSection.createDiv({ cls: "cmdspace-eagle-settings-filter-buttons" });
+    const hasAllImages = () => SUPPORTED_IMAGE_EXTENSIONS.every(
+      (ext) => this.plugin.settings.searchFileTypes.includes(ext)
+    );
+    const hasAllVideos = () => SUPPORTED_VIDEO_EXTENSIONS.every(
+      (ext) => this.plugin.settings.searchFileTypes.includes(ext)
+    );
+    const hasAllDocs = () => SUPPORTED_DOCUMENT_EXTENSIONS.every(
+      (ext) => this.plugin.settings.searchFileTypes.includes(ext)
+    );
+    const imgBtn = typeButtons.createEl("button", {
+      text: "Images",
+      cls: `cmdspace-eagle-settings-filter-btn ${hasAllImages() ? "is-active" : ""}`
+    });
+    imgBtn.addEventListener("click", async () => {
+      if (hasAllImages()) {
+        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+          (ext) => !SUPPORTED_IMAGE_EXTENSIONS.includes(ext)
+        );
+        imgBtn.removeClass("is-active");
+      } else {
+        SUPPORTED_IMAGE_EXTENSIONS.forEach((ext) => {
+          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+            this.plugin.settings.searchFileTypes.push(ext);
+          }
+        });
+        imgBtn.addClass("is-active");
+      }
+      if (this.plugin.settings.searchFileTypes.length === 0) {
+        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+        imgBtn.addClass("is-active");
+      }
+      await this.plugin.saveSettings();
+    });
+    const vidBtn = typeButtons.createEl("button", {
+      text: "Videos",
+      cls: `cmdspace-eagle-settings-filter-btn ${hasAllVideos() ? "is-active" : ""}`
+    });
+    vidBtn.addEventListener("click", async () => {
+      if (hasAllVideos()) {
+        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+          (ext) => !SUPPORTED_VIDEO_EXTENSIONS.includes(ext)
+        );
+        vidBtn.removeClass("is-active");
+      } else {
+        SUPPORTED_VIDEO_EXTENSIONS.forEach((ext) => {
+          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+            this.plugin.settings.searchFileTypes.push(ext);
+          }
+        });
+        vidBtn.addClass("is-active");
+      }
+      if (this.plugin.settings.searchFileTypes.length === 0) {
+        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+        imgBtn.addClass("is-active");
+      }
+      await this.plugin.saveSettings();
+    });
+    const docBtn = typeButtons.createEl("button", {
+      text: "Documents",
+      cls: `cmdspace-eagle-settings-filter-btn ${hasAllDocs() ? "is-active" : ""}`
+    });
+    docBtn.addEventListener("click", async () => {
+      if (hasAllDocs()) {
+        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+          (ext) => !SUPPORTED_DOCUMENT_EXTENSIONS.includes(ext)
+        );
+        docBtn.removeClass("is-active");
+      } else {
+        SUPPORTED_DOCUMENT_EXTENSIONS.forEach((ext) => {
+          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+            this.plugin.settings.searchFileTypes.push(ext);
+          }
+        });
+        docBtn.addClass("is-active");
+      }
+      if (this.plugin.settings.searchFileTypes.length === 0) {
+        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+        imgBtn.addClass("is-active");
+      }
+      await this.plugin.saveSettings();
+    });
+  }
 };
 
 // src/cloud-providers.ts
@@ -883,6 +1165,9 @@ function getMimeType2(ext) {
     "ico": "image/x-icon",
     "tiff": "image/tiff",
     "tif": "image/tiff",
+    "heic": "image/heic",
+    "heif": "image/heif",
+    "avif": "image/avif",
     "pdf": "application/pdf"
   };
   return MIME_TYPES2[ext.toLowerCase()] || "application/octet-stream";
@@ -1979,7 +2264,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   getLocalImageUnderCursor(editor) {
     const cursor = editor.getCursor();
     const line = editor.getLine(cursor.line);
-    const supportedExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp"];
+    const supportedExtensions = ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "tiff", "tif", "heic", "heif", "avif", "ico"];
     const extensionPattern = supportedExtensions.join("|");
     const wikilinkPattern = new RegExp(`!\\[\\[([^\\]]+\\.(${extensionPattern}))\\]\\]`, "gi");
     const markdownPattern = new RegExp(`!\\[([^\\]]*)\\]\\(([^)]+\\.(${extensionPattern}))\\)`, "gi");
@@ -2258,7 +2543,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       "image/png",
       "image/gif",
       "image/webp",
-      "image/bmp"
+      "image/bmp",
+      "image/svg+xml",
+      "image/tiff",
+      "image/heic",
+      "image/heif",
+      "image/avif"
     ];
     for (const file of Array.from(files)) {
       if (!imageTypes.includes(file.type)) {
@@ -2309,7 +2599,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         }
       }
     }
-    const localImageRegex = /!\[([^\]]*)\]\((?!https?:\/\/|file:\/\/)([^)]+\.(jpg|jpeg|png|gif|webp|mp4|mov))\)/gi;
+    const localImageRegex = /!\[([^\]]*)\]\((?!https?:\/\/|file:\/\/)([^)]+\.(jpg|jpeg|png|gif|webp|bmp|svg|tiff|tif|heic|heif|avif|ico|mp4|mov))\)/gi;
     while ((match = localImageRegex.exec(content)) !== null) {
       const relativePath = match[2];
       const absolutePath = this.getAbsolutePath(relativePath);

@@ -60,3 +60,115 @@
 .cmdspace-eagle-link:hover {
 	text-decoration: underline;
 }
+
+.cmdspace-eagle-filters {
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: 8px;
+}
+
+.cmdspace-eagle-filter-header {
+	margin-bottom: 10px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.cmdspace-eagle-library-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.cmdspace-eagle-filter-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.cmdspace-eagle-filter-row:last-child {
+	margin-bottom: 0;
+}
+
+.cmdspace-eagle-filter-label {
+	font-size: 12px;
+	color: var(--text-muted);
+	min-width: 70px;
+}
+
+.cmdspace-eagle-filter-buttons {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.cmdspace-eagle-filter-btn {
+	font-size: 11px;
+	padding: 4px 8px;
+	border-radius: 4px;
+	background: var(--background-modifier-hover);
+	border: 1px solid transparent;
+	cursor: pointer;
+	color: var(--text-muted);
+	transition: all 0.15s ease;
+}
+
+.cmdspace-eagle-filter-btn:hover {
+	background: var(--background-modifier-border);
+}
+
+.cmdspace-eagle-filter-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+
+.cmdspace-eagle-settings-filters {
+	margin: 12px 0;
+	padding: 12px;
+	background: var(--background-secondary);
+	border-radius: 8px;
+}
+
+.cmdspace-eagle-settings-filter-section {
+	margin-bottom: 12px;
+}
+
+.cmdspace-eagle-settings-filter-section:last-child {
+	margin-bottom: 0;
+}
+
+.cmdspace-eagle-settings-filter-title {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--text-normal);
+	margin-bottom: 8px;
+}
+
+.cmdspace-eagle-settings-filter-buttons {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.cmdspace-eagle-settings-filter-btn {
+	font-size: 12px;
+	padding: 6px 12px;
+	border-radius: 6px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	cursor: pointer;
+	color: var(--text-muted);
+	transition: all 0.15s ease;
+}
+
+.cmdspace-eagle-settings-filter-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.cmdspace-eagle-settings-filter-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}

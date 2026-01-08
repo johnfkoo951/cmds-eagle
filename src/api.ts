@@ -175,7 +175,6 @@ export class EagleApiService {
 				method: 'GET',
 			});
 			const json = response.json;
-			console.log('[CMDS Eagle] library/info response:', JSON.stringify(json, null, 2));
 			
 			if (json?.status === 'success' && json?.data) {
 				const data = json.data;
@@ -194,6 +193,17 @@ export class EagleApiService {
 			console.error('[CMDS Eagle] getLibraryPath error:', e);
 			return null;
 		}
+	}
+
+	async getLibraryName(): Promise<string | null> {
+		const path = await this.getLibraryPath();
+		if (!path) return null;
+		
+		const match = path.match(/([^/]+)\.library\/?$/i);
+		if (match) {
+			return match[1];
+		}
+		return path.split('/').pop()?.replace('.library', '') || null;
 	}
 
 	async refreshThumbnail(id: string): Promise<boolean> {
@@ -428,6 +438,9 @@ const MIME_TYPES: Record<string, string> = {
 	'ico': 'image/x-icon',
 	'tiff': 'image/tiff',
 	'tif': 'image/tiff',
+	'heic': 'image/heic',
+	'heif': 'image/heif',
+	'avif': 'image/avif',
 };
 
 function getMimeType(ext: string): string {

@@ -891,7 +891,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
 		
-		const supportedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp'];
+		const supportedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp', 'tiff', 'tif', 'heic', 'heif', 'avif', 'ico'];
 		const extensionPattern = supportedExtensions.join('|');
 		const wikilinkPattern = new RegExp(`!\\[\\[([^\\]]+\\.(${extensionPattern}))\\]\\]`, 'gi');
 		const markdownPattern = new RegExp(`!\\[([^\\]]*)\\]\\(([^)]+\\.(${extensionPattern}))\\)`, 'gi');
@@ -1236,6 +1236,11 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			'image/gif',
 			'image/webp',
 			'image/bmp',
+			'image/svg+xml',
+			'image/tiff',
+			'image/heic',
+			'image/heif',
+			'image/avif',
 		];
 		
 		for (const file of Array.from(files)) {
@@ -1294,7 +1299,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			}
 		}
 		
-		const localImageRegex = /!\[([^\]]*)\]\((?!https?:\/\/|file:\/\/)([^)]+\.(jpg|jpeg|png|gif|webp|mp4|mov))\)/gi;
+		const localImageRegex = /!\[([^\]]*)\]\((?!https?:\/\/|file:\/\/)([^)]+\.(jpg|jpeg|png|gif|webp|bmp|svg|tiff|tif|heic|heif|avif|ico|mp4|mov))\)/gi;
 		while ((match = localImageRegex.exec(content)) !== null) {
 			const relativePath = match[2];
 			const absolutePath = this.getAbsolutePath(relativePath);
