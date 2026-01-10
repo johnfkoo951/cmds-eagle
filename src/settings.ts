@@ -8,6 +8,8 @@ import {
 	SUPPORTED_IMAGE_EXTENSIONS,
 	SUPPORTED_VIDEO_EXTENSIONS,
 	SUPPORTED_DOCUMENT_EXTENSIONS,
+	ComputerProfile,
+	PlatformType,
 } from './types';
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
@@ -115,6 +117,9 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				}));
 
 		this.renderCloudProviderSettings(containerEl);
+
+		containerEl.createEl('h3', { text: 'Cross-Platform Sync' });
+		this.renderCrossPlatformSettings(containerEl);
 
 		containerEl.createEl('hr', { attr: { style: 'margin: 24px 0; border: none; border-top: 1px solid var(--background-modifier-border);' } });
 		
@@ -531,5 +536,126 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 			}
 			await this.plugin.saveSettings();
 		});
+	}
+
+	private renderCrossPlatformSettings(containerEl: HTMLElement): void {
+		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description' });
+		infoEl.style.marginBottom = '12px';
+		infoEl.innerHTML = `
+			<p style="margin: 0 0 8px 0;">Enable this to use the same vault on multiple computers (macOS/Windows).</p>
+			<p style="margin: 0; color: var(--text-muted);">File paths will be automatically converted based on the current computer.</p>
+		`;
+
+		new Setting(containerEl)
+			.setName('Enable cross-platform path conversion')
+			.setDesc('Convert file:// paths between registered computers')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.enableCrossPlatform)
+				.onChange(async (value) => {
+					this.plugin.settings.enableCrossPlatform = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		if (!this.plugin.settings.enableCrossPlatform) {
+			return;
+		}
+
+		const currentPlatform = process.platform as PlatformType;
+		const currentUsername = this.detectCurrentUsername();
+
+		new Setting(containerEl)
+			.setName('Add current computer')
+			.setDesc(`Detected: ${currentPlatform === 'darwin' ? 'macOS' : 'Windows'} / ${currentUsername}`)
+			.addButton(button => button
+				.setButtonText('Add')
+				.onClick(async () => {
+					const existingIndex = this.plugin.settings.computers.findIndex(
+						c => c.platform === currentPlatform && c.username === currentUsername
+					);
+					
+					if (existingIndex >= 0) {
+						new Notice('This computer is already registered');
+						return;
+					}
+
+					const newProfile: ComputerProfile = {
+						id: `${currentPlatform}-${currentUsername}-${Date.now()}`,
+						name: currentPlatform === 'darwin' ? `Mac (${currentUsername})` : `Windows (${currentUsername})`,
+						platform: currentPlatform,
+						username: currentUsername,
+						eagleLibraryPath: '',
+						isCurrentComputer: true,
+					};
+
+					this.plugin.settings.computers.push(newProfile);
+					await this.plugin.saveSettings();
+					this.display();
+					new Notice('Current computer added');
+				}));
+
+		if (this.plugin.settings.computers.length > 0) {
+			const listContainer = containerEl.createDiv({ cls: 'cmdspace-eagle-computer-list' });
+			listContainer.style.marginTop = '12px';
+			listContainer.style.padding = '12px';
+			listContainer.style.background = 'var(--background-secondary)';
+			listContainer.style.borderRadius = '8px';
+
+			listContainer.createEl('div', { 
+				text: 'Registered Computers',
+				attr: { style: 'font-weight: 600; margin-bottom: 12px;' }
+			});
+
+			for (const computer of this.plugin.settings.computers) {
+				const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
+				
+				const computerEl = listContainer.createDiv({ cls: 'cmdspace-eagle-computer-item' });
+				computerEl.style.display = 'flex';
+				computerEl.style.justifyContent = 'space-between';
+				computerEl.style.alignItems = 'center';
+				computerEl.style.padding = '8px';
+				computerEl.style.marginBottom = '8px';
+				computerEl.style.background = 'var(--background-primary)';
+				computerEl.style.borderRadius = '4px';
+				computerEl.style.border = isCurrentComputer ? '2px solid var(--interactive-accent)' : '1px solid var(--background-modifier-border)';
+
+				const infoDiv = computerEl.createDiv();
+				const platformIcon = computer.platform === 'darwin' ? '🍎' : '🪟';
+				infoDiv.createEl('div', { 
+					text: `${platformIcon} ${computer.name}`,
+					attr: { style: 'font-weight: 500;' }
+				});
+				infoDiv.createEl('div', { 
+					text: `${computer.platform === 'darwin' ? 'macOS' : 'Windows'} • ${computer.username}${isCurrentComputer ? ' (current)' : ''}`,
+					attr: { style: 'font-size: 12px; color: var(--text-muted);' }
+				});
+
+				const deleteBtn = computerEl.createEl('button', { text: '×' });
+				deleteBtn.style.padding = '4px 8px';
+				deleteBtn.style.cursor = 'pointer';
+				deleteBtn.addEventListener('click', async () => {
+					this.plugin.settings.computers = this.plugin.settings.computers.filter(c => c.id !== computer.id);
+					await this.plugin.saveSettings();
+					this.display();
+					new Notice('Computer removed');
+				});
+			}
+		}
+	}
+
+	private detectCurrentUsername(): string {
+		const adapter = this.app.vault.adapter as { basePath?: string };
+		const vaultPath = adapter.basePath || '';
+		const platform = process.platform;
+
+		if (platform === 'darwin') {
+			const match = vaultPath.match(/^\/Users\/([^/]+)/);
+			if (match) return match[1];
+		} else if (platform === 'win32') {
+			const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
+			if (match) return match[1];
+		}
+
+		return 'unknown';
 	}
 }

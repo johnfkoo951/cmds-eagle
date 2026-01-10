@@ -13,6 +13,8 @@ import {
 	DEFAULT_SETTINGS,
 	EagleItem,
 	ImagePasteBehavior,
+	ComputerProfile,
+	PlatformType,
 } from './types';
 import { 
 	EagleApiService, 
@@ -1154,8 +1156,89 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private pathToFileUrl(path: string): string {
-		const encodedPath = path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+		const convertedPath = this.convertPathForCurrentPlatform(path);
+		const normalizedPath = convertedPath.replace(/\\/g, '/');
+		const encodedPath = normalizedPath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+		
+		if (this.getCurrentPlatform() === 'win32' && /^[A-Za-z]:/.test(normalizedPath)) {
+			return `file:///${encodedPath}`;
+		}
 		return `file://${encodedPath}`;
+	}
+
+	private getCurrentPlatform(): PlatformType {
+		return process.platform as PlatformType;
+	}
+
+	private getCurrentUsername(): string {
+		const platform = this.getCurrentPlatform();
+		const vaultPath = this.getVaultPath();
+		
+		if (platform === 'darwin') {
+			const match = vaultPath.match(/^\/Users\/([^/]+)/);
+			if (match) return match[1];
+		} else if (platform === 'win32') {
+			const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
+			if (match) return match[1];
+		}
+		
+		return '';
+	}
+
+	private findMatchingComputer(path: string): ComputerProfile | null {
+		if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
+			return null;
+		}
+
+		for (const computer of this.settings.computers) {
+			if (computer.platform === 'darwin') {
+				if (path.includes(`/Users/${computer.username}/`)) {
+					return computer;
+				}
+			} else if (computer.platform === 'win32') {
+				const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, 'i');
+				if (winPattern.test(path)) {
+					return computer;
+				}
+			}
+		}
+		return null;
+	}
+
+	private convertPathForCurrentPlatform(path: string): string {
+		if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
+			return path;
+		}
+
+		const sourceComputer = this.findMatchingComputer(path);
+		if (!sourceComputer) {
+			return path;
+		}
+
+		const currentPlatform = this.getCurrentPlatform();
+		const currentUsername = this.getCurrentUsername();
+
+		const currentComputer = this.settings.computers.find(
+			c => c.platform === currentPlatform && c.username === currentUsername
+		);
+
+		if (!currentComputer || sourceComputer.id === currentComputer.id) {
+			return path;
+		}
+
+		let relativePath = '';
+		if (sourceComputer.platform === 'darwin') {
+			relativePath = path.replace(`/Users/${sourceComputer.username}/`, '');
+		} else {
+			const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, 'i');
+			relativePath = path.replace(winPattern, '').replace(/\\/g, '/');
+		}
+
+		if (currentComputer.platform === 'darwin') {
+			return `/Users/${currentComputer.username}/${relativePath}`;
+		} else {
+			return `C:/Users/${currentComputer.username}/${relativePath}`;
+		}
 	}
 
 	private async uploadImageToEagle(file: File): Promise<string> {

@@ -104,6 +104,17 @@ export type SupportedExtension =
 
 export type CloudProviderType = 'r2' | 's3' | 'webdav' | 'imghippo' | 'custom';
 
+export type PlatformType = 'darwin' | 'win32';
+
+export interface ComputerProfile {
+	id: string;
+	name: string;
+	platform: PlatformType;
+	username: string;
+	eagleLibraryPath: string;
+	isCurrentComputer?: boolean;
+}
+
 export interface CloudProviderConfig {
 	type: CloudProviderType;
 	enabled: boolean;
@@ -186,6 +197,8 @@ export interface CMDSPACEEagleSettings {
 		imghippo: ImgHippoProviderConfig;
 		custom: CustomProviderConfig;
 	};
+	enableCrossPlatform: boolean;
+	computers: ComputerProfile[];
 }
 
 export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
@@ -254,6 +267,8 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 			publicUrl: '',
 		},
 	},
+	enableCrossPlatform: false,
+	computers: [],
 };
 
 export interface AddFromPathRequest {

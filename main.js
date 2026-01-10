@@ -112,7 +112,9 @@ var DEFAULT_SETTINGS = {
       headers: {},
       publicUrl: ""
     }
-  }
+  },
+  enableCrossPlatform: false,
+  computers: []
 };
 
 // src/api.ts
@@ -724,8 +726,73 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     new import_obsidian2.Notice(`Inserted link to: ${item.name}`);
   }
   pathToFileUrl(path) {
-    const encodedPath = path.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+    const convertedPath = this.convertPathForCurrentPlatform(path);
+    const normalizedPath = convertedPath.replace(/\\/g, "/");
+    const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+    const platform = process.platform;
+    if (platform === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
+      return `file:///${encodedPath}`;
+    }
     return `file://${encodedPath}`;
+  }
+  convertPathForCurrentPlatform(path) {
+    if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
+      return path;
+    }
+    const sourceComputer = this.findMatchingComputer(path);
+    if (!sourceComputer) {
+      return path;
+    }
+    const currentPlatform = process.platform;
+    const currentUsername = this.detectCurrentUsername();
+    const currentComputer = this.settings.computers.find(
+      (c) => c.platform === currentPlatform && c.username === currentUsername
+    );
+    if (!currentComputer || sourceComputer.id === currentComputer.id) {
+      return path;
+    }
+    let relativePath = "";
+    if (sourceComputer.platform === "darwin") {
+      relativePath = path.replace(`/Users/${sourceComputer.username}/`, "");
+    } else {
+      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, "i");
+      relativePath = path.replace(winPattern, "").replace(/\\/g, "/");
+    }
+    if (currentComputer.platform === "darwin") {
+      return `/Users/${currentComputer.username}/${relativePath}`;
+    } else {
+      return `C:/Users/${currentComputer.username}/${relativePath}`;
+    }
+  }
+  findMatchingComputer(path) {
+    for (const computer of this.settings.computers) {
+      if (computer.platform === "darwin") {
+        if (path.includes(`/Users/${computer.username}/`)) {
+          return computer;
+        }
+      } else if (computer.platform === "win32") {
+        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
+        if (winPattern.test(path)) {
+          return computer;
+        }
+      }
+    }
+    return null;
+  }
+  detectCurrentUsername() {
+    const adapter = this.app.vault.adapter;
+    const vaultPath = adapter.basePath || "";
+    const platform = process.platform;
+    if (platform === "darwin") {
+      const match = vaultPath.match(/^\/Users\/([^/]+)/);
+      if (match)
+        return match[1];
+    } else if (platform === "win32") {
+      const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
+      if (match)
+        return match[1];
+    }
+    return "";
   }
   buildMetadataLine(item) {
     const linkUrl = buildEagleItemUrl(item.id);
@@ -874,6 +941,8 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.display();
     }));
     this.renderCloudProviderSettings(containerEl);
+    containerEl.createEl("h3", { text: "Cross-Platform Sync" });
+    this.renderCrossPlatformSettings(containerEl);
     containerEl.createEl("hr", { attr: { style: "margin: 24px 0; border: none; border-top: 1px solid var(--background-modifier-border);" } });
     const footerEl = containerEl.createEl("div", { attr: { style: "text-align: center; color: var(--text-muted); font-size: 12px;" } });
     footerEl.createEl("div", { text: `CMDS Eagle v${this.plugin.manifest.version}`, attr: { style: "margin-bottom: 8px;" } });
@@ -1148,6 +1217,102 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       }
       await this.plugin.saveSettings();
     });
+  }
+  renderCrossPlatformSettings(containerEl) {
+    const infoEl = containerEl.createEl("div", { cls: "setting-item-description" });
+    infoEl.style.marginBottom = "12px";
+    infoEl.innerHTML = `
+			<p style="margin: 0 0 8px 0;">Enable this to use the same vault on multiple computers (macOS/Windows).</p>
+			<p style="margin: 0; color: var(--text-muted);">File paths will be automatically converted based on the current computer.</p>
+		`;
+    new import_obsidian3.Setting(containerEl).setName("Enable cross-platform path conversion").setDesc("Convert file:// paths between registered computers").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableCrossPlatform).onChange(async (value) => {
+      this.plugin.settings.enableCrossPlatform = value;
+      await this.plugin.saveSettings();
+      this.display();
+    }));
+    if (!this.plugin.settings.enableCrossPlatform) {
+      return;
+    }
+    const currentPlatform = process.platform;
+    const currentUsername = this.detectCurrentUsername();
+    new import_obsidian3.Setting(containerEl).setName("Add current computer").setDesc(`Detected: ${currentPlatform === "darwin" ? "macOS" : "Windows"} / ${currentUsername}`).addButton((button) => button.setButtonText("Add").onClick(async () => {
+      const existingIndex = this.plugin.settings.computers.findIndex(
+        (c) => c.platform === currentPlatform && c.username === currentUsername
+      );
+      if (existingIndex >= 0) {
+        new import_obsidian3.Notice("This computer is already registered");
+        return;
+      }
+      const newProfile = {
+        id: `${currentPlatform}-${currentUsername}-${Date.now()}`,
+        name: currentPlatform === "darwin" ? `Mac (${currentUsername})` : `Windows (${currentUsername})`,
+        platform: currentPlatform,
+        username: currentUsername,
+        eagleLibraryPath: "",
+        isCurrentComputer: true
+      };
+      this.plugin.settings.computers.push(newProfile);
+      await this.plugin.saveSettings();
+      this.display();
+      new import_obsidian3.Notice("Current computer added");
+    }));
+    if (this.plugin.settings.computers.length > 0) {
+      const listContainer = containerEl.createDiv({ cls: "cmdspace-eagle-computer-list" });
+      listContainer.style.marginTop = "12px";
+      listContainer.style.padding = "12px";
+      listContainer.style.background = "var(--background-secondary)";
+      listContainer.style.borderRadius = "8px";
+      listContainer.createEl("div", {
+        text: "Registered Computers",
+        attr: { style: "font-weight: 600; margin-bottom: 12px;" }
+      });
+      for (const computer of this.plugin.settings.computers) {
+        const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
+        const computerEl = listContainer.createDiv({ cls: "cmdspace-eagle-computer-item" });
+        computerEl.style.display = "flex";
+        computerEl.style.justifyContent = "space-between";
+        computerEl.style.alignItems = "center";
+        computerEl.style.padding = "8px";
+        computerEl.style.marginBottom = "8px";
+        computerEl.style.background = "var(--background-primary)";
+        computerEl.style.borderRadius = "4px";
+        computerEl.style.border = isCurrentComputer ? "2px solid var(--interactive-accent)" : "1px solid var(--background-modifier-border)";
+        const infoDiv = computerEl.createDiv();
+        const platformIcon = computer.platform === "darwin" ? "\u{1F34E}" : "\u{1FA9F}";
+        infoDiv.createEl("div", {
+          text: `${platformIcon} ${computer.name}`,
+          attr: { style: "font-weight: 500;" }
+        });
+        infoDiv.createEl("div", {
+          text: `${computer.platform === "darwin" ? "macOS" : "Windows"} \u2022 ${computer.username}${isCurrentComputer ? " (current)" : ""}`,
+          attr: { style: "font-size: 12px; color: var(--text-muted);" }
+        });
+        const deleteBtn = computerEl.createEl("button", { text: "\xD7" });
+        deleteBtn.style.padding = "4px 8px";
+        deleteBtn.style.cursor = "pointer";
+        deleteBtn.addEventListener("click", async () => {
+          this.plugin.settings.computers = this.plugin.settings.computers.filter((c) => c.id !== computer.id);
+          await this.plugin.saveSettings();
+          this.display();
+          new import_obsidian3.Notice("Computer removed");
+        });
+      }
+    }
+  }
+  detectCurrentUsername() {
+    const adapter = this.app.vault.adapter;
+    const vaultPath = adapter.basePath || "";
+    const platform = process.platform;
+    if (platform === "darwin") {
+      const match = vaultPath.match(/^\/Users\/([^/]+)/);
+      if (match)
+        return match[1];
+    } else if (platform === "win32") {
+      const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
+      if (match)
+        return match[1];
+    }
+    return "unknown";
   }
 };
 
@@ -2478,8 +2643,77 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   pathToFileUrl(path) {
-    const encodedPath = path.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+    const convertedPath = this.convertPathForCurrentPlatform(path);
+    const normalizedPath = convertedPath.replace(/\\/g, "/");
+    const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+    if (this.getCurrentPlatform() === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
+      return `file:///${encodedPath}`;
+    }
     return `file://${encodedPath}`;
+  }
+  getCurrentPlatform() {
+    return process.platform;
+  }
+  getCurrentUsername() {
+    const platform = this.getCurrentPlatform();
+    const vaultPath = this.getVaultPath();
+    if (platform === "darwin") {
+      const match = vaultPath.match(/^\/Users\/([^/]+)/);
+      if (match)
+        return match[1];
+    } else if (platform === "win32") {
+      const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
+      if (match)
+        return match[1];
+    }
+    return "";
+  }
+  findMatchingComputer(path) {
+    if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
+      return null;
+    }
+    for (const computer of this.settings.computers) {
+      if (computer.platform === "darwin") {
+        if (path.includes(`/Users/${computer.username}/`)) {
+          return computer;
+        }
+      } else if (computer.platform === "win32") {
+        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
+        if (winPattern.test(path)) {
+          return computer;
+        }
+      }
+    }
+    return null;
+  }
+  convertPathForCurrentPlatform(path) {
+    if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
+      return path;
+    }
+    const sourceComputer = this.findMatchingComputer(path);
+    if (!sourceComputer) {
+      return path;
+    }
+    const currentPlatform = this.getCurrentPlatform();
+    const currentUsername = this.getCurrentUsername();
+    const currentComputer = this.settings.computers.find(
+      (c) => c.platform === currentPlatform && c.username === currentUsername
+    );
+    if (!currentComputer || sourceComputer.id === currentComputer.id) {
+      return path;
+    }
+    let relativePath = "";
+    if (sourceComputer.platform === "darwin") {
+      relativePath = path.replace(`/Users/${sourceComputer.username}/`, "");
+    } else {
+      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, "i");
+      relativePath = path.replace(winPattern, "").replace(/\\/g, "/");
+    }
+    if (currentComputer.platform === "darwin") {
+      return `/Users/${currentComputer.username}/${relativePath}`;
+    } else {
+      return `C:/Users/${currentComputer.username}/${relativePath}`;
+    }
   }
   async uploadImageToEagle(file) {
     const tempPath = await this.saveToTempLocation(file);
