@@ -32,9 +32,10 @@ import { createCloudProvider, getMimeType, getExtFromFilename, CloudProvider } f
 export default class CMDSPACELinkEagle extends Plugin {
 	settings: CMDSPACEEagleSettings;
 	api: EagleApiService;
+	private lastModifiedFile: string | null = null;
 
 	async onload(): Promise<void> {
-		console.log('Loading CMDSPACE Link: Eagle');
+		console.log('[CMDS Eagle] Loading plugin v1.5.0');
 
 		await this.loadSettings();
 		this.api = new EagleApiService(this.settings);
@@ -71,6 +72,14 @@ export default class CMDSPACELinkEagle extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: 'convert-cross-platform-paths',
+			name: 'Convert cross-platform image paths in current note',
+			callback: async () => {
+				await this.convertCrossPlatformPaths();
+			},
+		});
+
 		this.registerEvent(
 			this.app.workspace.on('editor-paste', async (evt: ClipboardEvent, editor: Editor) => {
 				await this.handlePaste(evt, editor);
@@ -100,7 +109,36 @@ export default class CMDSPACELinkEagle extends Plugin {
 
 		this.registerMarkdownPostProcessor((el, ctx) => {
 			this.processEagleLinks(el);
+			this.processFileUrls(el);
 		});
+
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', () => {
+				setTimeout(() => this.processActiveView(), 100);
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				setTimeout(() => this.processActiveView(), 100);
+			})
+		);
+
+		this.registerEvent(
+			this.app.vault.on('modify', (file: TAbstractFile) => {
+				this.lastModifiedFile = file.path;
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on('file-open', (file: TFile | null) => {
+				if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
+					if (this.lastModifiedFile !== file.path) {
+						setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+					}
+				}
+			})
+		);
 
 		this.addRibbonIcon('image', 'CMDSPACE: Eagle', () => {
 			new EagleSearchModal(this.app, this.api, this.settings).open();
@@ -108,7 +146,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 	}
 
 	onunload(): void {
-		console.log('Unloading CMDSPACE Link: Eagle');
+		console.log('[CMDS Eagle] Unloading plugin');
 	}
 
 	async loadSettings(): Promise<void> {
@@ -585,6 +623,89 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		}
 	}
 
+	private processActiveView(): void {
+		return;
+	}
+
+	private tryConvertImagePath(img: HTMLImageElement): void {
+		const src = img.getAttribute('src');
+		if (!src) return;
+		
+		const alreadyConverted = img.getAttribute('data-original-src');
+		if (alreadyConverted) return;
+
+		console.log(`[CMDS Eagle] Checking image src: ${src}`);
+
+		let extractedPath: string | null = null;
+		
+		if (src.startsWith('file://')) {
+			extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ''));
+		} else if (src.startsWith('app://')) {
+			const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
+			if (appMatch) {
+				extractedPath = this.fullyDecodeUri(appMatch[1]);
+			}
+		}
+
+		if (!extractedPath) {
+			console.log(`[CMDS Eagle] No extractable path`);
+			return;
+		}
+
+		console.log(`[CMDS Eagle] Extracted: ${extractedPath}`);
+
+		if (extractedPath.startsWith('Users/') && !extractedPath.startsWith('/')) {
+			extractedPath = '/' + extractedPath;
+		}
+
+		const isDifferent = this.isPathFromDifferentPlatform(extractedPath);
+		console.log(`[CMDS Eagle] Is from different platform: ${isDifferent}`);
+		
+		if (!isDifferent) return;
+
+		const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
+		
+		if (convertedPath !== extractedPath) {
+			const newSrc = this.pathToFileUrl(convertedPath);
+			console.log(`[CMDS Eagle] Setting new src: ${newSrc}`);
+			
+			const newImg = document.createElement('img');
+			newImg.src = newSrc;
+			newImg.alt = img.alt;
+			newImg.className = img.className;
+			newImg.setAttribute('data-original-src', src);
+			newImg.setAttribute('data-xplatform-replaced', 'true');
+			
+			if (img.parentNode) {
+				img.parentNode.replaceChild(newImg, img);
+				console.log(`[CMDS Eagle] Image element replaced`);
+			}
+		}
+	}
+
+	private isPathFromDifferentPlatform(path: string): boolean {
+		const currentPlatform = this.getCurrentPlatform();
+		const currentUsername = this.getCurrentUsername();
+		
+		for (const computer of this.settings.computers) {
+			if (computer.platform === currentPlatform && computer.username === currentUsername) {
+				continue;
+			}
+			
+			if (computer.platform === 'darwin') {
+				if (path.includes(`/Users/${computer.username}/`)) {
+					return true;
+				}
+			} else if (computer.platform === 'win32') {
+				const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, 'i');
+				if (winPattern.test(path)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	private processEagleLinks(el: HTMLElement): void {
 		const links = el.querySelectorAll('a[href^="eagle://"]');
 		links.forEach((link) => {
@@ -597,6 +718,24 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 				link.addClass('cmdspace-eagle-link');
 			}
 		});
+	}
+
+	private processFileUrls(el: HTMLElement): void {
+		return;
+	}
+
+	private fullyDecodeUri(str: string): string {
+		let decoded = str;
+		try {
+			while (decoded.includes('%')) {
+				const next = decodeURIComponent(decoded);
+				if (next === decoded) break;
+				decoded = next;
+			}
+		} catch {
+			return str;
+		}
+		return decoded;
 	}
 
 	private normalizeTag(tag: string): string {
@@ -1126,12 +1265,17 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private isEagleLibraryPath(text: string): boolean {
-		return text.includes('.library/images/') && text.includes('.info/');
+		if (text.startsWith('![') || text.startsWith('](')) {
+			return false;
+		}
+		const normalizedText = text.replace(/\\/g, '/');
+		return normalizedText.includes('.library/images/') && normalizedText.includes('.info/');
 	}
 
 	private async handleEagleLibraryPathPaste(path: string, editor: Editor): Promise<void> {
-		const filename = path.split('/').pop() || 'image';
-		const fileUrl = this.pathToFileUrl(path);
+		const normalizedPath = path.replace(/\\/g, '/');
+		const filename = normalizedPath.split('/').pop() || 'image';
+		const fileUrl = this.pathToFileUrl(normalizedPath);
 		const markdown = `![${filename}](${fileUrl})`;
 		editor.replaceSelection(markdown);
 		new Notice(`Embedded: ${filename}`);
@@ -1156,12 +1300,25 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private pathToFileUrl(path: string): string {
-		const convertedPath = this.convertPathForCurrentPlatform(path);
+		let decodedPath = path;
+		try {
+			while (decodedPath.includes('%')) {
+				const decoded = decodeURIComponent(decodedPath);
+				if (decoded === decodedPath) break;
+				decodedPath = decoded;
+			}
+		} catch {
+			decodedPath = path;
+		}
+
+		const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
 		const normalizedPath = convertedPath.replace(/\\/g, '/');
 		const encodedPath = normalizedPath.split('/').map(segment => encodeURIComponent(segment)).join('/');
 		
 		if (this.getCurrentPlatform() === 'win32' && /^[A-Za-z]:/.test(normalizedPath)) {
-			return `file:///${encodedPath}`;
+			// Fix: restore drive letter colon that was encoded as %3A
+			const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, '$1:');
+			return `file:///${fixedPath}`;
 		}
 		return `file://${encodedPath}`;
 	}
@@ -1192,16 +1349,19 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 
 		for (const computer of this.settings.computers) {
 			if (computer.platform === 'darwin') {
-				if (path.includes(`/Users/${computer.username}/`)) {
+				const macPattern = `/Users/${computer.username}/`;
+				if (path.includes(macPattern)) {
 					return computer;
 				}
 			} else if (computer.platform === 'win32') {
-				const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, 'i');
+				const winPattern = new RegExp(`^[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, 'i');
 				if (winPattern.test(path)) {
 					return computer;
 				}
 			}
 		}
+		
+		console.log('[CMDS Eagle] No computer matched path:', path.substring(0, 50));
 		return null;
 	}
 
@@ -1212,6 +1372,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 
 		const sourceComputer = this.findMatchingComputer(path);
 		if (!sourceComputer) {
+			console.log('[CMDS Eagle] No matching computer found for path');
 			return path;
 		}
 
@@ -1225,6 +1386,8 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		if (!currentComputer || sourceComputer.id === currentComputer.id) {
 			return path;
 		}
+
+		console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username} → ${currentComputer.platform}/${currentComputer.username}`);
 
 		let relativePath = '';
 		if (sourceComputer.platform === 'darwin') {
@@ -1332,6 +1495,80 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			}
 		}
 		return true;
+	}
+
+	private async convertCrossPlatformPaths(): Promise<void> {
+		if (!this.settings.enableCrossPlatform) {
+			new Notice('Cross-platform sync is disabled in settings');
+			return;
+		}
+
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			new Notice('No active file');
+			return;
+		}
+
+		const content = await this.app.vault.read(activeFile);
+		let newContent = content;
+		let convertedCount = 0;
+
+		const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+		let match;
+		
+		while ((match = fileUrlRegex.exec(content)) !== null) {
+			const originalUrl = match[2];
+			let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ''));
+			
+			if (filePath.startsWith('Users/') && !filePath.startsWith('/')) {
+				filePath = '/' + filePath;
+			}
+
+			if (this.isPathFromDifferentPlatform(filePath)) {
+				const convertedPath = this.convertPathForCurrentPlatform(filePath);
+				const newUrl = this.pathToFileUrl(convertedPath);
+				newContent = newContent.replace(originalUrl, newUrl);
+				convertedCount++;
+				console.log(`[CMDS Eagle] File converted: ${originalUrl.substring(0, 50)}... → ${newUrl.substring(0, 50)}...`);
+			}
+		}
+
+		if (convertedCount > 0) {
+			await this.app.vault.modify(activeFile, newContent);
+			new Notice(`Converted ${convertedCount} cross-platform image paths`);
+		} else {
+			new Notice('No cross-platform paths found to convert');
+		}
+	}
+
+	private async autoConvertOnFileOpen(file: TFile): Promise<void> {
+		const content = await this.app.vault.read(file);
+		let newContent = content;
+		let convertedCount = 0;
+
+		const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+		let match;
+		
+		while ((match = fileUrlRegex.exec(content)) !== null) {
+			const originalUrl = match[2];
+			let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ''));
+			
+			if (filePath.startsWith('Users/') && !filePath.startsWith('/')) {
+				filePath = '/' + filePath;
+			}
+
+			if (this.isPathFromDifferentPlatform(filePath)) {
+				const convertedPath = this.convertPathForCurrentPlatform(filePath);
+				const newUrl = this.pathToFileUrl(convertedPath);
+				newContent = newContent.replace(originalUrl, newUrl);
+				convertedCount++;
+			}
+		}
+
+		if (convertedCount > 0) {
+			await this.app.vault.modify(file, newContent);
+			new Notice(`Auto-converted ${convertedCount} cross-platform paths`);
+		}
 	}
 
 	private async uploadAllImagesToCloud(): Promise<void> {

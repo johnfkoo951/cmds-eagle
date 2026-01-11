@@ -114,6 +114,7 @@ var DEFAULT_SETTINGS = {
     }
   },
   enableCrossPlatform: false,
+  autoConvertCrossPlatformPaths: false,
   computers: []
 };
 
@@ -726,12 +727,24 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     new import_obsidian2.Notice(`Inserted link to: ${item.name}`);
   }
   pathToFileUrl(path) {
-    const convertedPath = this.convertPathForCurrentPlatform(path);
+    let decodedPath = path;
+    try {
+      while (decodedPath.includes("%")) {
+        const decoded = decodeURIComponent(decodedPath);
+        if (decoded === decodedPath)
+          break;
+        decodedPath = decoded;
+      }
+    } catch (e) {
+      decodedPath = path;
+    }
+    const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
     const normalizedPath = convertedPath.replace(/\\/g, "/");
     const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
     const platform = process.platform;
     if (platform === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
-      return `file:///${encodedPath}`;
+      const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, "$1:");
+      return `file:///${fixedPath}`;
     }
     return `file://${encodedPath}`;
   }
@@ -1233,6 +1246,10 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     if (!this.plugin.settings.enableCrossPlatform) {
       return;
     }
+    new import_obsidian3.Setting(containerEl).setName("Auto-convert paths on file open").setDesc("Automatically convert cross-platform paths when opening a note").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoConvertCrossPlatformPaths).onChange(async (value) => {
+      this.plugin.settings.autoConvertCrossPlatformPaths = value;
+      await this.plugin.saveSettings();
+    }));
     const currentPlatform = process.platform;
     const currentUsername = this.detectCurrentUsername();
     new import_obsidian3.Setting(containerEl).setName("Add current computer").setDesc(`Detected: ${currentPlatform === "darwin" ? "macOS" : "Windows"} / ${currentUsername}`).addButton((button) => button.setButtonText("Add").onClick(async () => {
@@ -1714,8 +1731,12 @@ function getExtFromFilename(filename) {
 
 // src/main.ts
 var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
+  constructor() {
+    super(...arguments);
+    this.lastModifiedFile = null;
+  }
   async onload() {
-    console.log("Loading CMDSPACE Link: Eagle");
+    console.log("[CMDS Eagle] Loading plugin v1.5.0");
     await this.loadSettings();
     this.api = new EagleApiService(this.settings);
     this.addCommand({
@@ -1746,6 +1767,13 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
         await this.uploadAllImagesToCloud();
       }
     });
+    this.addCommand({
+      id: "convert-cross-platform-paths",
+      name: "Convert cross-platform image paths in current note",
+      callback: async () => {
+        await this.convertCrossPlatformPaths();
+      }
+    });
     this.registerEvent(
       this.app.workspace.on("editor-paste", async (evt, editor) => {
         await this.handlePaste(evt, editor);
@@ -1769,13 +1797,38 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     this.addSettingTab(new CMDSPACEEagleSettingTab(this.app, this));
     this.registerMarkdownPostProcessor((el, ctx) => {
       this.processEagleLinks(el);
+      this.processFileUrls(el);
     });
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        setTimeout(() => this.processActiveView(), 100);
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        setTimeout(() => this.processActiveView(), 100);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        this.lastModifiedFile = file.path;
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
+          if (this.lastModifiedFile !== file.path) {
+            setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+          }
+        }
+      })
+    );
     this.addRibbonIcon("image", "CMDSPACE: Eagle", () => {
       new EagleSearchModal(this.app, this.api, this.settings).open();
     });
   }
   onunload() {
-    console.log("Unloading CMDSPACE Link: Eagle");
+    console.log("[CMDS Eagle] Unloading plugin");
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -2166,6 +2219,74 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
   }
+  processActiveView() {
+    return;
+  }
+  tryConvertImagePath(img) {
+    const src = img.getAttribute("src");
+    if (!src)
+      return;
+    const alreadyConverted = img.getAttribute("data-original-src");
+    if (alreadyConverted)
+      return;
+    console.log(`[CMDS Eagle] Checking image src: ${src}`);
+    let extractedPath = null;
+    if (src.startsWith("file://")) {
+      extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
+    } else if (src.startsWith("app://")) {
+      const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
+      if (appMatch) {
+        extractedPath = this.fullyDecodeUri(appMatch[1]);
+      }
+    }
+    if (!extractedPath) {
+      console.log(`[CMDS Eagle] No extractable path`);
+      return;
+    }
+    console.log(`[CMDS Eagle] Extracted: ${extractedPath}`);
+    if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
+      extractedPath = "/" + extractedPath;
+    }
+    const isDifferent = this.isPathFromDifferentPlatform(extractedPath);
+    console.log(`[CMDS Eagle] Is from different platform: ${isDifferent}`);
+    if (!isDifferent)
+      return;
+    const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
+    if (convertedPath !== extractedPath) {
+      const newSrc = this.pathToFileUrl(convertedPath);
+      console.log(`[CMDS Eagle] Setting new src: ${newSrc}`);
+      const newImg = document.createElement("img");
+      newImg.src = newSrc;
+      newImg.alt = img.alt;
+      newImg.className = img.className;
+      newImg.setAttribute("data-original-src", src);
+      newImg.setAttribute("data-xplatform-replaced", "true");
+      if (img.parentNode) {
+        img.parentNode.replaceChild(newImg, img);
+        console.log(`[CMDS Eagle] Image element replaced`);
+      }
+    }
+  }
+  isPathFromDifferentPlatform(path) {
+    const currentPlatform = this.getCurrentPlatform();
+    const currentUsername = this.getCurrentUsername();
+    for (const computer of this.settings.computers) {
+      if (computer.platform === currentPlatform && computer.username === currentUsername) {
+        continue;
+      }
+      if (computer.platform === "darwin") {
+        if (path.includes(`/Users/${computer.username}/`)) {
+          return true;
+        }
+      } else if (computer.platform === "win32") {
+        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
+        if (winPattern.test(path)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
   processEagleLinks(el) {
     const links = el.querySelectorAll('a[href^="eagle://"]');
     links.forEach((link) => {
@@ -2178,6 +2299,23 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         link.addClass("cmdspace-eagle-link");
       }
     });
+  }
+  processFileUrls(el) {
+    return;
+  }
+  fullyDecodeUri(str) {
+    let decoded = str;
+    try {
+      while (decoded.includes("%")) {
+        const next = decodeURIComponent(decoded);
+        if (next === decoded)
+          break;
+        decoded = next;
+      }
+    } catch (e) {
+      return str;
+    }
+    return decoded;
   }
   normalizeTag(tag) {
     let normalized = tag.replace(/\s+/g, "-");
@@ -2617,11 +2755,16 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   isEagleLibraryPath(text) {
-    return text.includes(".library/images/") && text.includes(".info/");
+    if (text.startsWith("![") || text.startsWith("](")) {
+      return false;
+    }
+    const normalizedText = text.replace(/\\/g, "/");
+    return normalizedText.includes(".library/images/") && normalizedText.includes(".info/");
   }
   async handleEagleLibraryPathPaste(path, editor) {
-    const filename = path.split("/").pop() || "image";
-    const fileUrl = this.pathToFileUrl(path);
+    const normalizedPath = path.replace(/\\/g, "/");
+    const filename = normalizedPath.split("/").pop() || "image";
+    const fileUrl = this.pathToFileUrl(normalizedPath);
     const markdown = `![${filename}](${fileUrl})`;
     editor.replaceSelection(markdown);
     new import_obsidian4.Notice(`Embedded: ${filename}`);
@@ -2643,11 +2786,23 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   pathToFileUrl(path) {
-    const convertedPath = this.convertPathForCurrentPlatform(path);
+    let decodedPath = path;
+    try {
+      while (decodedPath.includes("%")) {
+        const decoded = decodeURIComponent(decodedPath);
+        if (decoded === decodedPath)
+          break;
+        decodedPath = decoded;
+      }
+    } catch (e) {
+      decodedPath = path;
+    }
+    const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
     const normalizedPath = convertedPath.replace(/\\/g, "/");
     const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
     if (this.getCurrentPlatform() === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
-      return `file:///${encodedPath}`;
+      const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, "$1:");
+      return `file:///${fixedPath}`;
     }
     return `file://${encodedPath}`;
   }
@@ -2674,16 +2829,18 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     for (const computer of this.settings.computers) {
       if (computer.platform === "darwin") {
-        if (path.includes(`/Users/${computer.username}/`)) {
+        const macPattern = `/Users/${computer.username}/`;
+        if (path.includes(macPattern)) {
           return computer;
         }
       } else if (computer.platform === "win32") {
-        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
+        const winPattern = new RegExp(`^[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
         if (winPattern.test(path)) {
           return computer;
         }
       }
     }
+    console.log("[CMDS Eagle] No computer matched path:", path.substring(0, 50));
     return null;
   }
   convertPathForCurrentPlatform(path) {
@@ -2692,6 +2849,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     const sourceComputer = this.findMatchingComputer(path);
     if (!sourceComputer) {
+      console.log("[CMDS Eagle] No matching computer found for path");
       return path;
     }
     const currentPlatform = this.getCurrentPlatform();
@@ -2702,6 +2860,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (!currentComputer || sourceComputer.id === currentComputer.id) {
       return path;
     }
+    console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username} \u2192 ${currentComputer.platform}/${currentComputer.username}`);
     let relativePath = "";
     if (sourceComputer.platform === "darwin") {
       relativePath = path.replace(`/Users/${sourceComputer.username}/`, "");
@@ -2790,6 +2949,66 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
     return true;
+  }
+  async convertCrossPlatformPaths() {
+    if (!this.settings.enableCrossPlatform) {
+      new import_obsidian4.Notice("Cross-platform sync is disabled in settings");
+      return;
+    }
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new import_obsidian4.Notice("No active file");
+      return;
+    }
+    const content = await this.app.vault.read(activeFile);
+    let newContent = content;
+    let convertedCount = 0;
+    const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+    let match;
+    while ((match = fileUrlRegex.exec(content)) !== null) {
+      const originalUrl = match[2];
+      let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ""));
+      if (filePath.startsWith("Users/") && !filePath.startsWith("/")) {
+        filePath = "/" + filePath;
+      }
+      if (this.isPathFromDifferentPlatform(filePath)) {
+        const convertedPath = this.convertPathForCurrentPlatform(filePath);
+        const newUrl = this.pathToFileUrl(convertedPath);
+        newContent = newContent.replace(originalUrl, newUrl);
+        convertedCount++;
+        console.log(`[CMDS Eagle] File converted: ${originalUrl.substring(0, 50)}... \u2192 ${newUrl.substring(0, 50)}...`);
+      }
+    }
+    if (convertedCount > 0) {
+      await this.app.vault.modify(activeFile, newContent);
+      new import_obsidian4.Notice(`Converted ${convertedCount} cross-platform image paths`);
+    } else {
+      new import_obsidian4.Notice("No cross-platform paths found to convert");
+    }
+  }
+  async autoConvertOnFileOpen(file) {
+    const content = await this.app.vault.read(file);
+    let newContent = content;
+    let convertedCount = 0;
+    const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+    let match;
+    while ((match = fileUrlRegex.exec(content)) !== null) {
+      const originalUrl = match[2];
+      let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ""));
+      if (filePath.startsWith("Users/") && !filePath.startsWith("/")) {
+        filePath = "/" + filePath;
+      }
+      if (this.isPathFromDifferentPlatform(filePath)) {
+        const convertedPath = this.convertPathForCurrentPlatform(filePath);
+        const newUrl = this.pathToFileUrl(convertedPath);
+        newContent = newContent.replace(originalUrl, newUrl);
+        convertedCount++;
+      }
+    }
+    if (convertedCount > 0) {
+      await this.app.vault.modify(file, newContent);
+      new import_obsidian4.Notice(`Auto-converted ${convertedCount} cross-platform paths`);
+    }
   }
   async uploadAllImagesToCloud() {
     const provider = this.getActiveCloudProvider();

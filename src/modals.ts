@@ -304,13 +304,25 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	}
 
 	private pathToFileUrl(path: string): string {
-		const convertedPath = this.convertPathForCurrentPlatform(path);
+		let decodedPath = path;
+		try {
+			while (decodedPath.includes('%')) {
+				const decoded = decodeURIComponent(decodedPath);
+				if (decoded === decodedPath) break;
+				decodedPath = decoded;
+			}
+		} catch {
+			decodedPath = path;
+		}
+
+		const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
 		const normalizedPath = convertedPath.replace(/\\/g, '/');
 		const encodedPath = normalizedPath.split('/').map(segment => encodeURIComponent(segment)).join('/');
 		
 		const platform = process.platform as PlatformType;
 		if (platform === 'win32' && /^[A-Za-z]:/.test(normalizedPath)) {
-			return `file:///${encodedPath}`;
+			const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, '$1:');
+			return `file:///${fixedPath}`;
 		}
 		return `file://${encodedPath}`;
 	}

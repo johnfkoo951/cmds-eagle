@@ -10,6 +10,7 @@ Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your v
 - **Cloud Upload**: Upload images to cloud storage (ImgHippo, Cloudflare R2, Amazon S3, WebDAV)
 - **Paste/Drop Integration**: Automatically handle pasted or dropped images
 - **Batch Convert**: Convert all local images in a note to cloud URLs
+- **Cross-Platform Sync**: Automatically convert image paths between Mac and Windows
 
 ## Installation
 
@@ -57,6 +58,24 @@ Upload images to cloud storage for sharing and portability.
 ![Cloud Upload](assets/CMDS-eagle5.gif)
 ![Paste Options](assets/CMDS-eagle4.gif)
 
+### Cross-Platform Sync
+
+Use the same Eagle library across Mac and Windows with automatic path conversion.
+
+![Cross-Platform Sync](assets/CMDS-eagle-cross-platform.gif)
+
+**How it works:**
+1. Register your computers in settings (Mac and Windows)
+2. Eagle library synced via cloud storage (e.g., Dropbox, iCloud, OneDrive)
+3. Image paths automatically convert when opening notes on different platforms
+
+**Settings:**
+- `Enable cross-platform path conversion`: Turn on/off the feature
+- `Auto-convert paths on file open`: Automatically convert paths when opening notes
+
+**Manual conversion:**
+- Command: `Convert cross-platform image paths in current note`
+
 ## Settings
 
 Configure your preferred cloud provider and search defaults.
@@ -83,6 +102,7 @@ Configure your preferred cloud provider and search defaults.
 | `Upload clipboard Eagle image to cloud` | Upload from clipboard |
 | `Embed Eagle image and upload to cloud` | Embed + upload in one step |
 | `Convert all images in note to cloud URLs` | Batch convert local images |
+| `Convert cross-platform image paths in current note` | Convert Mac/Windows paths |
 
 ## License
 

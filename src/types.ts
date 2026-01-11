@@ -198,6 +198,7 @@ export interface CMDSPACEEagleSettings {
 		custom: CustomProviderConfig;
 	};
 	enableCrossPlatform: boolean;
+	autoConvertCrossPlatformPaths: boolean;
 	computers: ComputerProfile[];
 }
 
@@ -268,6 +269,7 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 		},
 	},
 	enableCrossPlatform: false,
+	autoConvertCrossPlatformPaths: false,
 	computers: [],
 };
 

@@ -561,6 +561,16 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 			return;
 		}
 
+		new Setting(containerEl)
+			.setName('Auto-convert paths on file open')
+			.setDesc('Automatically convert cross-platform paths when opening a note')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoConvertCrossPlatformPaths)
+				.onChange(async (value) => {
+					this.plugin.settings.autoConvertCrossPlatformPaths = value;
+					await this.plugin.saveSettings();
+				}));
+
 		const currentPlatform = process.platform as PlatformType;
 		const currentUsername = this.detectCurrentUsername();
 
