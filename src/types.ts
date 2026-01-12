@@ -111,9 +111,12 @@ export interface ComputerProfile {
 	name: string;
 	platform: PlatformType;
 	username: string;
+	subPath: string;
 	eagleLibraryPath: string;
 	isCurrentComputer?: boolean;
 }
+
+export type CrossPlatformConversionMode = 'modify-source' | 'render-only';
 
 export interface CloudProviderConfig {
 	type: CloudProviderType;
@@ -199,6 +202,7 @@ export interface CMDSPACEEagleSettings {
 	};
 	enableCrossPlatform: boolean;
 	autoConvertCrossPlatformPaths: boolean;
+	crossPlatformConversionMode: CrossPlatformConversionMode;
 	computers: ComputerProfile[];
 }
 
@@ -270,6 +274,7 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	},
 	enableCrossPlatform: false,
 	autoConvertCrossPlatformPaths: false,
+	crossPlatformConversionMode: 'modify-source',
 	computers: [],
 };
 

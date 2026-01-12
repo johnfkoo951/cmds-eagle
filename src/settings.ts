@@ -10,6 +10,7 @@ import {
 	SUPPORTED_DOCUMENT_EXTENSIONS,
 	ComputerProfile,
 	PlatformType,
+	CrossPlatformConversionMode,
 } from './types';
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
@@ -571,6 +572,18 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		new Setting(containerEl)
+			.setName('Conversion mode')
+			.setDesc('Choose how to convert paths: modify source file or render-only (experimental)')
+			.addDropdown(dropdown => dropdown
+				.addOption('modify-source', 'Modify source file')
+				.addOption('render-only', 'Render only (keep source intact)')
+				.setValue(this.plugin.settings.crossPlatformConversionMode)
+				.onChange(async (value: CrossPlatformConversionMode) => {
+					this.plugin.settings.crossPlatformConversionMode = value;
+					await this.plugin.saveSettings();
+				}));
+
 		const currentPlatform = process.platform as PlatformType;
 		const currentUsername = this.detectCurrentUsername();
 
@@ -594,6 +607,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 						name: currentPlatform === 'darwin' ? `Mac (${currentUsername})` : `Windows (${currentUsername})`,
 						platform: currentPlatform,
 						username: currentUsername,
+						subPath: '',
 						eagleLibraryPath: '',
 						isCurrentComputer: true,
 					};
@@ -621,15 +635,16 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				
 				const computerEl = listContainer.createDiv({ cls: 'cmdspace-eagle-computer-item' });
 				computerEl.style.display = 'flex';
-				computerEl.style.justifyContent = 'space-between';
-				computerEl.style.alignItems = 'center';
-				computerEl.style.padding = '8px';
+				computerEl.style.flexDirection = 'column';
+				computerEl.style.padding = '12px';
 				computerEl.style.marginBottom = '8px';
 				computerEl.style.background = 'var(--background-primary)';
 				computerEl.style.borderRadius = '4px';
 				computerEl.style.border = isCurrentComputer ? '2px solid var(--interactive-accent)' : '1px solid var(--background-modifier-border)';
 
-				const infoDiv = computerEl.createDiv();
+				const headerRow = computerEl.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center; width: 100%;' } });
+
+				const infoDiv = headerRow.createDiv({ attr: { style: 'flex: 1;' } });
 				const platformIcon = computer.platform === 'darwin' ? '🍎' : '🪟';
 				infoDiv.createEl('div', { 
 					text: `${platformIcon} ${computer.name}`,
@@ -640,7 +655,26 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					attr: { style: 'font-size: 12px; color: var(--text-muted);' }
 				});
 
-				const deleteBtn = computerEl.createEl('button', { text: '×' });
+				const deleteBtn = headerRow.createEl('button', { text: '×' });
+
+				const subPathContainer = computerEl.createDiv({ attr: { style: 'margin-top: 8px; width: 100%;' } });
+				subPathContainer.createEl('label', { 
+					text: 'Sub-path (folders between /Users/name/ and sync folder)',
+					attr: { style: 'font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;' }
+				});
+				const subPathInput = subPathContainer.createEl('input', {
+					type: 'text',
+					value: computer.subPath || '',
+					placeholder: 'e.g., OneDrive or Dropbox/Work',
+					attr: { style: 'width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);' }
+				});
+				subPathInput.addEventListener('change', async () => {
+					const idx = this.plugin.settings.computers.findIndex(c => c.id === computer.id);
+					if (idx >= 0) {
+						this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
+						await this.plugin.saveSettings();
+					}
+				});
 				deleteBtn.style.padding = '4px 8px';
 				deleteBtn.style.cursor = 'pointer';
 				deleteBtn.addEventListener('click', async () => {

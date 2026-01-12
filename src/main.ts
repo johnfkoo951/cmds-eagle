@@ -133,8 +133,10 @@ export default class CMDSPACELinkEagle extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file: TFile | null) => {
 				if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
-					if (this.lastModifiedFile !== file.path) {
-						setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+					if (this.settings.crossPlatformConversionMode === 'modify-source') {
+						if (this.lastModifiedFile !== file.path) {
+							setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+						}
 					}
 				}
 			})
@@ -721,7 +723,48 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private processFileUrls(el: HTMLElement): void {
-		return;
+		if (!this.settings.enableCrossPlatform) return;
+		if (this.settings.crossPlatformConversionMode !== 'render-only') return;
+
+		const images = el.querySelectorAll('img') as NodeListOf<HTMLImageElement>;
+		images.forEach((img) => {
+			this.convertImageSrcForRendering(img);
+		});
+	}
+
+	private convertImageSrcForRendering(img: HTMLImageElement): void {
+		const src = img.getAttribute('src');
+		if (!src) return;
+
+		if (img.getAttribute('data-xplatform-converted')) return;
+
+		let extractedPath: string | null = null;
+		
+		if (src.startsWith('app://')) {
+			const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
+			if (appMatch) {
+				extractedPath = this.fullyDecodeUri(appMatch[1]);
+			}
+		} else if (src.startsWith('file://')) {
+			extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ''));
+		}
+
+		if (!extractedPath) return;
+
+		if (extractedPath.startsWith('Users/') && !extractedPath.startsWith('/')) {
+			extractedPath = '/' + extractedPath;
+		}
+
+		if (!this.isPathFromDifferentPlatform(extractedPath)) return;
+
+		const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
+		
+		if (convertedPath !== extractedPath) {
+			const newSrc = this.pathToFileUrl(convertedPath);
+			img.setAttribute('src', newSrc);
+			img.setAttribute('data-xplatform-converted', 'true');
+			img.setAttribute('data-original-src', src);
+		}
 	}
 
 	private fullyDecodeUri(str: string): string {
@@ -1387,20 +1430,33 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			return path;
 		}
 
-		console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username} → ${currentComputer.platform}/${currentComputer.username}`);
+		const sourceSubPath = sourceComputer.subPath || '';
+		const currentSubPath = currentComputer.subPath || '';
+
+		console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username}/${sourceSubPath} → ${currentComputer.platform}/${currentComputer.username}/${currentSubPath}`);
 
 		let relativePath = '';
 		if (sourceComputer.platform === 'darwin') {
-			relativePath = path.replace(`/Users/${sourceComputer.username}/`, '');
+			const sourceRoot = sourceSubPath 
+				? `/Users/${sourceComputer.username}/${sourceSubPath}/`
+				: `/Users/${sourceComputer.username}/`;
+			relativePath = path.replace(sourceRoot, '');
 		} else {
-			const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, 'i');
+			const subPathPart = sourceSubPath ? `[/\\\\]${sourceSubPath.replace(/[/\\]/g, '[/\\\\]')}` : '';
+			const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}${subPathPart}[/\\\\]`, 'i');
 			relativePath = path.replace(winPattern, '').replace(/\\/g, '/');
 		}
 
 		if (currentComputer.platform === 'darwin') {
-			return `/Users/${currentComputer.username}/${relativePath}`;
+			const targetRoot = currentSubPath 
+				? `/Users/${currentComputer.username}/${currentSubPath}/`
+				: `/Users/${currentComputer.username}/`;
+			return `${targetRoot}${relativePath}`;
 		} else {
-			return `C:/Users/${currentComputer.username}/${relativePath}`;
+			const targetRoot = currentSubPath 
+				? `C:/Users/${currentComputer.username}/${currentSubPath}/`
+				: `C:/Users/${currentComputer.username}/`;
+			return `${targetRoot}${relativePath}`;
 		}
 	}
 

@@ -115,6 +115,7 @@ var DEFAULT_SETTINGS = {
   },
   enableCrossPlatform: false,
   autoConvertCrossPlatformPaths: false,
+  crossPlatformConversionMode: "modify-source",
   computers: []
 };
 
@@ -1250,6 +1251,10 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.autoConvertCrossPlatformPaths = value;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian3.Setting(containerEl).setName("Conversion mode").setDesc("Choose how to convert paths: modify source file or render-only (experimental)").addDropdown((dropdown) => dropdown.addOption("modify-source", "Modify source file").addOption("render-only", "Render only (keep source intact)").setValue(this.plugin.settings.crossPlatformConversionMode).onChange(async (value) => {
+      this.plugin.settings.crossPlatformConversionMode = value;
+      await this.plugin.saveSettings();
+    }));
     const currentPlatform = process.platform;
     const currentUsername = this.detectCurrentUsername();
     new import_obsidian3.Setting(containerEl).setName("Add current computer").setDesc(`Detected: ${currentPlatform === "darwin" ? "macOS" : "Windows"} / ${currentUsername}`).addButton((button) => button.setButtonText("Add").onClick(async () => {
@@ -1265,6 +1270,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         name: currentPlatform === "darwin" ? `Mac (${currentUsername})` : `Windows (${currentUsername})`,
         platform: currentPlatform,
         username: currentUsername,
+        subPath: "",
         eagleLibraryPath: "",
         isCurrentComputer: true
       };
@@ -1287,14 +1293,14 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
         const computerEl = listContainer.createDiv({ cls: "cmdspace-eagle-computer-item" });
         computerEl.style.display = "flex";
-        computerEl.style.justifyContent = "space-between";
-        computerEl.style.alignItems = "center";
-        computerEl.style.padding = "8px";
+        computerEl.style.flexDirection = "column";
+        computerEl.style.padding = "12px";
         computerEl.style.marginBottom = "8px";
         computerEl.style.background = "var(--background-primary)";
         computerEl.style.borderRadius = "4px";
         computerEl.style.border = isCurrentComputer ? "2px solid var(--interactive-accent)" : "1px solid var(--background-modifier-border)";
-        const infoDiv = computerEl.createDiv();
+        const headerRow = computerEl.createDiv({ attr: { style: "display: flex; justify-content: space-between; align-items: center; width: 100%;" } });
+        const infoDiv = headerRow.createDiv({ attr: { style: "flex: 1;" } });
         const platformIcon = computer.platform === "darwin" ? "\u{1F34E}" : "\u{1FA9F}";
         infoDiv.createEl("div", {
           text: `${platformIcon} ${computer.name}`,
@@ -1304,7 +1310,25 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
           text: `${computer.platform === "darwin" ? "macOS" : "Windows"} \u2022 ${computer.username}${isCurrentComputer ? " (current)" : ""}`,
           attr: { style: "font-size: 12px; color: var(--text-muted);" }
         });
-        const deleteBtn = computerEl.createEl("button", { text: "\xD7" });
+        const deleteBtn = headerRow.createEl("button", { text: "\xD7" });
+        const subPathContainer = computerEl.createDiv({ attr: { style: "margin-top: 8px; width: 100%;" } });
+        subPathContainer.createEl("label", {
+          text: "Sub-path (folders between /Users/name/ and sync folder)",
+          attr: { style: "font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;" }
+        });
+        const subPathInput = subPathContainer.createEl("input", {
+          type: "text",
+          value: computer.subPath || "",
+          placeholder: "e.g., OneDrive or Dropbox/Work",
+          attr: { style: "width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);" }
+        });
+        subPathInput.addEventListener("change", async () => {
+          const idx = this.plugin.settings.computers.findIndex((c) => c.id === computer.id);
+          if (idx >= 0) {
+            this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
+            await this.plugin.saveSettings();
+          }
+        });
         deleteBtn.style.padding = "4px 8px";
         deleteBtn.style.cursor = "pointer";
         deleteBtn.addEventListener("click", async () => {
@@ -1817,8 +1841,10 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
-          if (this.lastModifiedFile !== file.path) {
-            setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+          if (this.settings.crossPlatformConversionMode === "modify-source") {
+            if (this.lastModifiedFile !== file.path) {
+              setTimeout(() => this.autoConvertOnFileOpen(file), 200);
+            }
           }
         }
       })
@@ -2301,7 +2327,44 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     });
   }
   processFileUrls(el) {
-    return;
+    if (!this.settings.enableCrossPlatform)
+      return;
+    if (this.settings.crossPlatformConversionMode !== "render-only")
+      return;
+    const images = el.querySelectorAll("img");
+    images.forEach((img) => {
+      this.convertImageSrcForRendering(img);
+    });
+  }
+  convertImageSrcForRendering(img) {
+    const src = img.getAttribute("src");
+    if (!src)
+      return;
+    if (img.getAttribute("data-xplatform-converted"))
+      return;
+    let extractedPath = null;
+    if (src.startsWith("app://")) {
+      const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
+      if (appMatch) {
+        extractedPath = this.fullyDecodeUri(appMatch[1]);
+      }
+    } else if (src.startsWith("file://")) {
+      extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
+    }
+    if (!extractedPath)
+      return;
+    if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
+      extractedPath = "/" + extractedPath;
+    }
+    if (!this.isPathFromDifferentPlatform(extractedPath))
+      return;
+    const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
+    if (convertedPath !== extractedPath) {
+      const newSrc = this.pathToFileUrl(convertedPath);
+      img.setAttribute("src", newSrc);
+      img.setAttribute("data-xplatform-converted", "true");
+      img.setAttribute("data-original-src", src);
+    }
   }
   fullyDecodeUri(str) {
     let decoded = str;
@@ -2860,18 +2923,24 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (!currentComputer || sourceComputer.id === currentComputer.id) {
       return path;
     }
-    console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username} \u2192 ${currentComputer.platform}/${currentComputer.username}`);
+    const sourceSubPath = sourceComputer.subPath || "";
+    const currentSubPath = currentComputer.subPath || "";
+    console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username}/${sourceSubPath} \u2192 ${currentComputer.platform}/${currentComputer.username}/${currentSubPath}`);
     let relativePath = "";
     if (sourceComputer.platform === "darwin") {
-      relativePath = path.replace(`/Users/${sourceComputer.username}/`, "");
+      const sourceRoot = sourceSubPath ? `/Users/${sourceComputer.username}/${sourceSubPath}/` : `/Users/${sourceComputer.username}/`;
+      relativePath = path.replace(sourceRoot, "");
     } else {
-      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, "i");
+      const subPathPart = sourceSubPath ? `[/\\\\]${sourceSubPath.replace(/[/\\]/g, "[/\\\\]")}` : "";
+      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}${subPathPart}[/\\\\]`, "i");
       relativePath = path.replace(winPattern, "").replace(/\\/g, "/");
     }
     if (currentComputer.platform === "darwin") {
-      return `/Users/${currentComputer.username}/${relativePath}`;
+      const targetRoot = currentSubPath ? `/Users/${currentComputer.username}/${currentSubPath}/` : `/Users/${currentComputer.username}/`;
+      return `${targetRoot}${relativePath}`;
     } else {
-      return `C:/Users/${currentComputer.username}/${relativePath}`;
+      const targetRoot = currentSubPath ? `C:/Users/${currentComputer.username}/${currentSubPath}/` : `C:/Users/${currentComputer.username}/`;
+      return `${targetRoot}${relativePath}`;
     }
   }
   async uploadImageToEagle(file) {
