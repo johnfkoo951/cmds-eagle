@@ -303,7 +303,7 @@ export class EagleApiService {
 			formData.append('content_type', mimeType);
 			formData.append('eagle_id', item.id);
 
-			const response = await fetch(`${this.r2WorkerUrl}/upload`, {
+			const response = await window.fetch(`${this.r2WorkerUrl}/upload`, {
 				method: 'POST',
 				headers: {
 					'Authorization': `Bearer ${this.r2ApiKey}`,

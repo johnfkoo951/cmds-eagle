@@ -52,7 +52,7 @@ export class R2Provider implements CloudProvider {
 			formData.append('filename', filename);
 			formData.append('content_type', mimeType);
 
-			const response = await fetch(`${this.config.workerUrl}/upload`, {
+			const response = await window.fetch(`${this.config.workerUrl}/upload`, {
 				method: 'POST',
 				headers: {
 					'Authorization': `Bearer ${this.config.apiKey}`,
@@ -85,7 +85,7 @@ export class R2Provider implements CloudProvider {
 			return false;
 		}
 		try {
-			const response = await fetch(`${this.config.workerUrl}/health`, {
+			const response = await window.fetch(`${this.config.workerUrl}/health`, {
 				method: 'GET',
 				headers: {
 					'Authorization': `Bearer ${this.config.apiKey}`,
@@ -159,7 +159,7 @@ export class S3Provider implements CloudProvider {
 			
 			const authorizationHeader = `${algorithm} Credential=${this.config.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 			
-			const response = await fetch(`${this.config.endpoint}/${this.config.bucket}/${key}`, {
+			const response = await window.fetch(`${this.config.endpoint}/${this.config.bucket}/${key}`, {
 				method: 'PUT',
 				headers: {
 					'Content-Type': mimeType,
@@ -194,7 +194,7 @@ export class S3Provider implements CloudProvider {
 			return false;
 		}
 		try {
-			const response = await fetch(`${this.config.endpoint}/${this.config.bucket}`, {
+			const response = await window.fetch(`${this.config.endpoint}/${this.config.bucket}`, {
 				method: 'HEAD',
 			});
 			return response.status < 500;
@@ -263,7 +263,7 @@ export class WebDAVProvider implements CloudProvider {
 
 			const auth = btoa(`${this.config.username}:${this.config.password}`);
 
-			const response = await fetch(uploadUrl, {
+			const response = await window.fetch(uploadUrl, {
 				method: 'PUT',
 				headers: {
 					'Authorization': `Basic ${auth}`,
@@ -296,7 +296,7 @@ export class WebDAVProvider implements CloudProvider {
 		}
 		try {
 			const auth = btoa(`${this.config.username}:${this.config.password}`);
-			const response = await fetch(this.config.serverUrl, {
+			const response = await window.fetch(this.config.serverUrl, {
 				method: 'PROPFIND',
 				headers: {
 					'Authorization': `Basic ${auth}`,
@@ -336,7 +336,7 @@ export class ImgHippoProvider implements CloudProvider {
 			formData.append('file', blob, filename);
 			formData.append('title', filename);
 
-			const response = await fetch(this.API_URL, {
+			const response = await window.fetch(this.API_URL, {
 				method: 'POST',
 				body: formData,
 			});
@@ -429,7 +429,7 @@ export class CustomProvider implements CloudProvider {
 			formData.append('file', blob, filename);
 			formData.append('filename', filename);
 
-			const response = await fetch(this.config.uploadUrl, {
+			const response = await window.fetch(this.config.uploadUrl, {
 				method: 'POST',
 				headers: this.config.headers,
 				body: formData,
@@ -462,7 +462,7 @@ export class CustomProvider implements CloudProvider {
 			return false;
 		}
 		try {
-			const response = await fetch(this.config.uploadUrl, {
+			const response = await window.fetch(this.config.uploadUrl, {
 				method: 'HEAD',
 				headers: this.config.headers,
 			});

@@ -25,9 +25,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'CMDS Eagle Settings' });
-
-		containerEl.createEl('h3', { text: 'Connection' });
+		new Setting(containerEl).setName('Connection').setHeading();
 
 		new Setting(containerEl)
 			.setName('Eagle API Base URL')
@@ -69,7 +67,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					}
 				}));
 
-		containerEl.createEl('h3', { text: 'Image Paste/Drop Behavior' });
+		new Setting(containerEl).setName('Image paste/drop behavior').setHeading();
 
 		new Setting(containerEl)
 			.setName('Default image behavior')
@@ -85,7 +83,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		containerEl.createEl('h3', { text: 'Search & Embed' });
+		new Setting(containerEl).setName('Search & embed').setHeading();
 
 		new Setting(containerEl)
 			.setName('Include metadata card')
@@ -99,7 +97,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 
 		this.renderSearchFiltersSettings(containerEl);
 
-		containerEl.createEl('h3', { text: 'Cloud Storage Provider' });
+		new Setting(containerEl).setName('Cloud storage provider').setHeading();
 
 		new Setting(containerEl)
 			.setName('Active Cloud Provider')
@@ -119,7 +117,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 
 		this.renderCloudProviderSettings(containerEl);
 
-		containerEl.createEl('h3', { text: 'Cross-Platform Sync' });
+		new Setting(containerEl).setName('Cross-platform sync').setHeading();
 		this.renderCrossPlatformSettings(containerEl);
 
 		containerEl.createEl('hr', { attr: { style: 'margin: 24px 0; border: none; border-top: 1px solid var(--background-modifier-border);' } });
@@ -163,19 +161,15 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private renderR2Settings(containerEl: HTMLElement): void {
-		containerEl.createEl('h4', { text: 'Cloudflare R2 Settings' });
-		
-		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description' });
-		infoEl.style.marginBottom = '12px';
-		infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">Cloudflare R2 requires a Worker for uploads. Setup:</p>
-			<ol style="margin: 0; padding-left: 20px;">
-				<li>Create an R2 bucket in Cloudflare dashboard</li>
-				<li>Deploy the Eagle Cloud Worker (see plugin docs)</li>
-				<li>Copy Worker URL and API Key below</li>
-			</ol>
-		`;
-		
+		new Setting(containerEl).setName('Cloudflare R2').setHeading();
+
+		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description cmds-eagle-info-block' });
+		infoEl.createEl('p', { text: 'Cloudflare R2 requires a Worker for uploads. Setup:' });
+		const r2List = infoEl.createEl('ol');
+		r2List.createEl('li', { text: 'Create an R2 bucket in Cloudflare dashboard' });
+		r2List.createEl('li', { text: 'Deploy the Eagle Cloud Worker (see plugin docs)' });
+		r2List.createEl('li', { text: 'Copy Worker URL and API Key below' });
+
 		new Setting(containerEl)
 			.setName('Worker URL')
 			.setDesc('Cloudflare Worker URL (must end with .workers.dev)')
@@ -218,19 +212,20 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private renderImgHippoSettings(containerEl: HTMLElement): void {
-		containerEl.createEl('h4', { text: 'ImgHippo Settings (Free Image Hosting)' });
-		
-		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description' });
-		infoEl.style.marginBottom = '12px';
-		infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">ImgHippo is a free image hosting service. To get your API key:</p>
-			<ol style="margin: 0; padding-left: 20px;">
-				<li>Visit <a href="https://www.imghippo.com/">imghippo.com</a> and sign up/login</li>
-				<li>Go to <a href="https://www.imghippo.com/settings">Settings page</a></li>
-				<li>Copy your API key and paste it below</li>
-			</ol>
-		`;
-		
+		new Setting(containerEl).setName('ImgHippo (free image hosting)').setHeading();
+
+		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description cmds-eagle-info-block' });
+		infoEl.createEl('p', { text: 'ImgHippo is a free image hosting service. To get your API key:' });
+		const ihList = infoEl.createEl('ol');
+		const ihLi1 = ihList.createEl('li');
+		ihLi1.appendText('Visit ');
+		ihLi1.createEl('a', { text: 'imghippo.com', href: 'https://www.imghippo.com/' });
+		ihLi1.appendText(' and sign up/login');
+		const ihLi2 = ihList.createEl('li');
+		ihLi2.appendText('Go to ');
+		ihLi2.createEl('a', { text: 'Settings page', href: 'https://www.imghippo.com/settings' });
+		ihList.createEl('li', { text: 'Copy your API key and paste it below' });
+
 		new Setting(containerEl)
 			.setName('API Key')
 			.setDesc('Your ImgHippo API key from the settings page')
@@ -259,7 +254,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private renderS3Settings(containerEl: HTMLElement): void {
-		containerEl.createEl('h4', { text: 'Amazon S3 Settings' });
+		new Setting(containerEl).setName('Amazon S3').setHeading();
 		
 		new Setting(containerEl)
 			.setName('Endpoint')
@@ -328,7 +323,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private renderWebDAVSettings(containerEl: HTMLElement): void {
-		containerEl.createEl('h4', { text: 'WebDAV Settings' });
+		new Setting(containerEl).setName('WebDAV').setHeading();
 		containerEl.createEl('p', { 
 			text: 'Works with Synology NAS, Nextcloud, ownCloud, or any WebDAV server.',
 			cls: 'setting-item-description'
@@ -391,7 +386,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private renderCustomSettings(containerEl: HTMLElement): void {
-		containerEl.createEl('h4', { text: 'Custom Server Settings' });
+		new Setting(containerEl).setName('Custom server').setHeading();
 		containerEl.createEl('p', { 
 			text: 'Configure a custom upload endpoint. Server should accept multipart/form-data with "file" field.',
 			cls: 'setting-item-description'
@@ -439,7 +434,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				text: label,
 				cls: `cmdspace-eagle-settings-filter-btn ${this.plugin.settings.searchScope.includes(key) ? 'is-active' : ''}`
 			});
-			btn.addEventListener('click', async () => {
+			btn.addEventListener('click', () => { void (async () => {
 				if (this.plugin.settings.searchScope.includes(key)) {
 					if (this.plugin.settings.searchScope.length > 1) {
 						this.plugin.settings.searchScope = this.plugin.settings.searchScope.filter(s => s !== key);
@@ -450,7 +445,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					btn.addClass('is-active');
 				}
 				await this.plugin.saveSettings();
-			});
+			})(); });
 		});
 
 		const typeSection = filterContainer.createDiv({ cls: 'cmdspace-eagle-settings-filter-section' });
@@ -471,7 +466,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 			text: 'Images',
 			cls: `cmdspace-eagle-settings-filter-btn ${hasAllImages() ? 'is-active' : ''}`
 		});
-		imgBtn.addEventListener('click', async () => {
+		imgBtn.addEventListener('click', () => { void (async () => {
 			if (hasAllImages()) {
 				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
 					ext => !SUPPORTED_IMAGE_EXTENSIONS.includes(ext as typeof SUPPORTED_IMAGE_EXTENSIONS[number])
@@ -490,13 +485,13 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				imgBtn.addClass('is-active');
 			}
 			await this.plugin.saveSettings();
-		});
+		})(); });
 
 		const vidBtn = typeButtons.createEl('button', {
 			text: 'Videos',
 			cls: `cmdspace-eagle-settings-filter-btn ${hasAllVideos() ? 'is-active' : ''}`
 		});
-		vidBtn.addEventListener('click', async () => {
+		vidBtn.addEventListener('click', () => { void (async () => {
 			if (hasAllVideos()) {
 				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
 					ext => !SUPPORTED_VIDEO_EXTENSIONS.includes(ext as typeof SUPPORTED_VIDEO_EXTENSIONS[number])
@@ -515,13 +510,13 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				imgBtn.addClass('is-active');
 			}
 			await this.plugin.saveSettings();
-		});
+		})(); });
 
 		const docBtn = typeButtons.createEl('button', {
 			text: 'Documents',
 			cls: `cmdspace-eagle-settings-filter-btn ${hasAllDocs() ? 'is-active' : ''}`
 		});
-		docBtn.addEventListener('click', async () => {
+		docBtn.addEventListener('click', () => { void (async () => {
 			if (hasAllDocs()) {
 				this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
 					ext => !SUPPORTED_DOCUMENT_EXTENSIONS.includes(ext as typeof SUPPORTED_DOCUMENT_EXTENSIONS[number])
@@ -540,16 +535,13 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				imgBtn.addClass('is-active');
 			}
 			await this.plugin.saveSettings();
-		});
+		})(); });
 	}
 
 	private renderCrossPlatformSettings(containerEl: HTMLElement): void {
-		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description' });
-		infoEl.style.marginBottom = '12px';
-		infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">Enable this to use the same vault on multiple computers (macOS/Windows).</p>
-			<p style="margin: 0; color: var(--text-muted);">File paths will be automatically converted based on the current computer.</p>
-		`;
+		const infoEl = containerEl.createEl('div', { cls: 'setting-item-description cmds-eagle-info-block' });
+		infoEl.createEl('p', { text: 'Enable this to use the same vault on multiple computers (macOS/Windows).' });
+		infoEl.createEl('p', { text: 'File paths will be automatically converted based on the current computer.', cls: 'cmds-eagle-muted' });
 
 		new Setting(containerEl)
 			.setName('Enable cross-platform path conversion')
@@ -614,27 +606,19 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 
 		if (this.plugin.settings.computers.length > 0) {
 			const listContainer = containerEl.createDiv({ cls: 'cmdspace-eagle-computer-list' });
-			listContainer.style.marginTop = '12px';
-			listContainer.style.padding = '12px';
-			listContainer.style.background = 'var(--background-secondary)';
-			listContainer.style.borderRadius = '8px';
 
-			listContainer.createEl('div', { 
+			listContainer.createEl('div', {
 				text: 'Registered Computers',
-				attr: { style: 'font-weight: 600; margin-bottom: 12px;' }
+				cls: 'cmdspace-eagle-computer-list-title'
 			});
 
 			for (const computer of this.plugin.settings.computers) {
 				const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
 				
 				const computerEl = listContainer.createDiv({ cls: 'cmdspace-eagle-computer-item' });
-				computerEl.style.display = 'flex';
-				computerEl.style.flexDirection = 'column';
-				computerEl.style.padding = '12px';
-				computerEl.style.marginBottom = '8px';
-				computerEl.style.background = 'var(--background-primary)';
-				computerEl.style.borderRadius = '4px';
-				computerEl.style.border = isCurrentComputer ? '2px solid var(--interactive-accent)' : '1px solid var(--background-modifier-border)';
+				if (isCurrentComputer) {
+					computerEl.addClass('is-current');
+				}
 
 				const headerRow = computerEl.createDiv({ attr: { style: 'display: flex; justify-content: space-between; align-items: center; width: 100%;' } });
 
@@ -649,7 +633,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					attr: { style: 'font-size: 12px; color: var(--text-muted);' }
 				});
 
-				const deleteBtn = headerRow.createEl('button', { text: '×' });
+				const deleteBtn = headerRow.createEl('button', { text: '×', cls: 'cmdspace-eagle-computer-delete' });
 
 				const subPathContainer = computerEl.createDiv({ attr: { style: 'margin-top: 8px; width: 100%;' } });
 				subPathContainer.createEl('label', { 
@@ -662,21 +646,19 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					placeholder: 'e.g., OneDrive or Dropbox/Work',
 					attr: { style: 'width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);' }
 				});
-				subPathInput.addEventListener('change', async () => {
+				subPathInput.addEventListener('change', () => { void (async () => {
 					const idx = this.plugin.settings.computers.findIndex(c => c.id === computer.id);
 					if (idx >= 0) {
 						this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
 						await this.plugin.saveSettings();
 					}
-				});
-				deleteBtn.style.padding = '4px 8px';
-				deleteBtn.style.cursor = 'pointer';
-				deleteBtn.addEventListener('click', async () => {
+				})(); });
+				deleteBtn.addEventListener('click', () => { void (async () => {
 					this.plugin.settings.computers = this.plugin.settings.computers.filter(c => c.id !== computer.id);
 					await this.plugin.saveSettings();
 					this.display();
 					new Notice('Computer removed');
-				});
+				})(); });
 			}
 		}
 	}

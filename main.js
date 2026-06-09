@@ -364,7 +364,7 @@ var EagleApiService = class {
       formData.append("filename", filename);
       formData.append("content_type", mimeType);
       formData.append("eagle_id", item.id);
-      const response = await fetch(`${this.r2WorkerUrl}/upload`, {
+      const response = await window.fetch(`${this.r2WorkerUrl}/upload`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${this.r2ApiKey}`
@@ -503,7 +503,7 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     ]);
   }
   async onOpen() {
-    super.onOpen();
+    void super.onOpen();
     this.buildFilterUI();
     await this.loadItems();
   }
@@ -689,7 +689,7 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     }
   }
   onChooseItem(item, evt) {
-    this.insertItemLink(item);
+    void this.insertItemLink(item);
   }
   async insertItemLink(item) {
     const activeView = this.app.workspace.getActiveViewOfType(import_obsidian2.MarkdownView);
@@ -915,8 +915,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "CMDS Eagle Settings" });
-    containerEl.createEl("h3", { text: "Connection" });
+    new import_obsidian3.Setting(containerEl).setName("Connection").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Eagle API Base URL").setDesc("The base URL for Eagle's local API (default: http://localhost:41595)").addText((text) => text.setPlaceholder("http://localhost:41595").setValue(this.plugin.settings.eagleApiBaseUrl).onChange(async (value) => {
       this.plugin.settings.eagleApiBaseUrl = value || "http://localhost:41595";
       await this.plugin.saveSettings();
@@ -937,25 +936,25 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         new import_obsidian3.Notice("\u2717 Failed to connect to Eagle. Make sure Eagle is running.");
       }
     }));
-    containerEl.createEl("h3", { text: "Image Paste/Drop Behavior" });
+    new import_obsidian3.Setting(containerEl).setName("Image paste/drop behavior").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Default image behavior").setDesc("What to do when pasting or dropping images").addDropdown((dropdown) => dropdown.addOption("ask", "Ask every time").addOption("eagle", "Always upload to Eagle (local)").addOption("local", "Always save to vault (local)").addOption("cloud", "Always upload to cloud").setValue(this.plugin.settings.imagePasteBehavior).onChange(async (value) => {
       this.plugin.settings.imagePasteBehavior = value;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h3", { text: "Search & Embed" });
+    new import_obsidian3.Setting(containerEl).setName("Search & embed").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc("Add metadata (type, size, tags, Eagle link) below the image when embedding").addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
       this.plugin.settings.insertThumbnail = value;
       await this.plugin.saveSettings();
     }));
     this.renderSearchFiltersSettings(containerEl);
-    containerEl.createEl("h3", { text: "Cloud Storage Provider" });
+    new import_obsidian3.Setting(containerEl).setName("Cloud storage provider").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Active Cloud Provider").setDesc("Select which cloud storage to use for image uploads").addDropdown((dropdown) => dropdown.addOption("r2", "Cloudflare R2").addOption("imghippo", "ImgHippo (Free)").addOption("s3", "Amazon S3").addOption("webdav", "WebDAV (Synology/NAS)").addOption("custom", "Custom Server").setValue(this.plugin.settings.activeCloudProvider).onChange(async (value) => {
       this.plugin.settings.activeCloudProvider = value;
       await this.plugin.saveSettings();
       this.display();
     }));
     this.renderCloudProviderSettings(containerEl);
-    containerEl.createEl("h3", { text: "Cross-Platform Sync" });
+    new import_obsidian3.Setting(containerEl).setName("Cross-platform sync").setHeading();
     this.renderCrossPlatformSettings(containerEl);
     containerEl.createEl("hr", { attr: { style: "margin: 24px 0; border: none; border-top: 1px solid var(--background-modifier-border);" } });
     const footerEl = containerEl.createEl("div", { attr: { style: "text-align: center; color: var(--text-muted); font-size: 12px;" } });
@@ -993,17 +992,13 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }
   }
   renderR2Settings(containerEl) {
-    containerEl.createEl("h4", { text: "Cloudflare R2 Settings" });
-    const infoEl = containerEl.createEl("div", { cls: "setting-item-description" });
-    infoEl.style.marginBottom = "12px";
-    infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">Cloudflare R2 requires a Worker for uploads. Setup:</p>
-			<ol style="margin: 0; padding-left: 20px;">
-				<li>Create an R2 bucket in Cloudflare dashboard</li>
-				<li>Deploy the Eagle Cloud Worker (see plugin docs)</li>
-				<li>Copy Worker URL and API Key below</li>
-			</ol>
-		`;
+    new import_obsidian3.Setting(containerEl).setName("Cloudflare R2").setHeading();
+    const infoEl = containerEl.createEl("div", { cls: "setting-item-description cmds-eagle-info-block" });
+    infoEl.createEl("p", { text: "Cloudflare R2 requires a Worker for uploads. Setup:" });
+    const r2List = infoEl.createEl("ol");
+    r2List.createEl("li", { text: "Create an R2 bucket in Cloudflare dashboard" });
+    r2List.createEl("li", { text: "Deploy the Eagle Cloud Worker (see plugin docs)" });
+    r2List.createEl("li", { text: "Copy Worker URL and API Key below" });
     new import_obsidian3.Setting(containerEl).setName("Worker URL").setDesc("Cloudflare Worker URL (must end with .workers.dev)").addText((text) => text.setPlaceholder("https://eagle-uploader.xxx.workers.dev").setValue(this.plugin.settings.cloudProviders.r2.workerUrl).onChange(async (value) => {
       let url = value.trim();
       if (url && !url.startsWith("http")) {
@@ -1025,17 +1020,18 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }));
   }
   renderImgHippoSettings(containerEl) {
-    containerEl.createEl("h4", { text: "ImgHippo Settings (Free Image Hosting)" });
-    const infoEl = containerEl.createEl("div", { cls: "setting-item-description" });
-    infoEl.style.marginBottom = "12px";
-    infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">ImgHippo is a free image hosting service. To get your API key:</p>
-			<ol style="margin: 0; padding-left: 20px;">
-				<li>Visit <a href="https://www.imghippo.com/">imghippo.com</a> and sign up/login</li>
-				<li>Go to <a href="https://www.imghippo.com/settings">Settings page</a></li>
-				<li>Copy your API key and paste it below</li>
-			</ol>
-		`;
+    new import_obsidian3.Setting(containerEl).setName("ImgHippo (free image hosting)").setHeading();
+    const infoEl = containerEl.createEl("div", { cls: "setting-item-description cmds-eagle-info-block" });
+    infoEl.createEl("p", { text: "ImgHippo is a free image hosting service. To get your API key:" });
+    const ihList = infoEl.createEl("ol");
+    const ihLi1 = ihList.createEl("li");
+    ihLi1.appendText("Visit ");
+    ihLi1.createEl("a", { text: "imghippo.com", href: "https://www.imghippo.com/" });
+    ihLi1.appendText(" and sign up/login");
+    const ihLi2 = ihList.createEl("li");
+    ihLi2.appendText("Go to ");
+    ihLi2.createEl("a", { text: "Settings page", href: "https://www.imghippo.com/settings" });
+    ihList.createEl("li", { text: "Copy your API key and paste it below" });
     new import_obsidian3.Setting(containerEl).setName("API Key").setDesc("Your ImgHippo API key from the settings page").addText((text) => text.setPlaceholder("Your ImgHippo API key").setValue(this.plugin.settings.cloudProviders.imghippo.apiKey).onChange(async (value) => {
       this.plugin.settings.cloudProviders.imghippo.apiKey = value.trim();
       this.plugin.settings.cloudProviders.imghippo.enabled = !!value.trim();
@@ -1051,7 +1047,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }));
   }
   renderS3Settings(containerEl) {
-    containerEl.createEl("h4", { text: "Amazon S3 Settings" });
+    new import_obsidian3.Setting(containerEl).setName("Amazon S3").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Endpoint").setDesc("S3-compatible endpoint URL").addText((text) => text.setPlaceholder("https://s3.amazonaws.com").setValue(this.plugin.settings.cloudProviders.s3.endpoint).onChange(async (value) => {
       this.plugin.settings.cloudProviders.s3.endpoint = value.trim();
       await this.plugin.saveSettings();
@@ -1079,7 +1075,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }));
   }
   renderWebDAVSettings(containerEl) {
-    containerEl.createEl("h4", { text: "WebDAV Settings" });
+    new import_obsidian3.Setting(containerEl).setName("WebDAV").setHeading();
     containerEl.createEl("p", {
       text: "Works with Synology NAS, Nextcloud, ownCloud, or any WebDAV server.",
       cls: "setting-item-description"
@@ -1107,7 +1103,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }));
   }
   renderCustomSettings(containerEl) {
-    containerEl.createEl("h4", { text: "Custom Server Settings" });
+    new import_obsidian3.Setting(containerEl).setName("Custom server").setHeading();
     containerEl.createEl("p", {
       text: 'Configure a custom upload endpoint. Server should accept multipart/form-data with "file" field.',
       cls: "setting-item-description"
@@ -1138,17 +1134,19 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         text: label,
         cls: `cmdspace-eagle-settings-filter-btn ${this.plugin.settings.searchScope.includes(key) ? "is-active" : ""}`
       });
-      btn.addEventListener("click", async () => {
-        if (this.plugin.settings.searchScope.includes(key)) {
-          if (this.plugin.settings.searchScope.length > 1) {
-            this.plugin.settings.searchScope = this.plugin.settings.searchScope.filter((s) => s !== key);
-            btn.removeClass("is-active");
+      btn.addEventListener("click", () => {
+        void (async () => {
+          if (this.plugin.settings.searchScope.includes(key)) {
+            if (this.plugin.settings.searchScope.length > 1) {
+              this.plugin.settings.searchScope = this.plugin.settings.searchScope.filter((s) => s !== key);
+              btn.removeClass("is-active");
+            }
+          } else {
+            this.plugin.settings.searchScope.push(key);
+            btn.addClass("is-active");
           }
-        } else {
-          this.plugin.settings.searchScope.push(key);
-          btn.addClass("is-active");
-        }
-        await this.plugin.saveSettings();
+          await this.plugin.saveSettings();
+        })();
       });
     });
     const typeSection = filterContainer.createDiv({ cls: "cmdspace-eagle-settings-filter-section" });
@@ -1167,82 +1165,85 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "Images",
       cls: `cmdspace-eagle-settings-filter-btn ${hasAllImages() ? "is-active" : ""}`
     });
-    imgBtn.addEventListener("click", async () => {
-      if (hasAllImages()) {
-        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
-          (ext) => !SUPPORTED_IMAGE_EXTENSIONS.includes(ext)
-        );
-        imgBtn.removeClass("is-active");
-      } else {
-        SUPPORTED_IMAGE_EXTENSIONS.forEach((ext) => {
-          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
-            this.plugin.settings.searchFileTypes.push(ext);
-          }
-        });
-        imgBtn.addClass("is-active");
-      }
-      if (this.plugin.settings.searchFileTypes.length === 0) {
-        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
-        imgBtn.addClass("is-active");
-      }
-      await this.plugin.saveSettings();
+    imgBtn.addEventListener("click", () => {
+      void (async () => {
+        if (hasAllImages()) {
+          this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+            (ext) => !SUPPORTED_IMAGE_EXTENSIONS.includes(ext)
+          );
+          imgBtn.removeClass("is-active");
+        } else {
+          SUPPORTED_IMAGE_EXTENSIONS.forEach((ext) => {
+            if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+              this.plugin.settings.searchFileTypes.push(ext);
+            }
+          });
+          imgBtn.addClass("is-active");
+        }
+        if (this.plugin.settings.searchFileTypes.length === 0) {
+          this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+          imgBtn.addClass("is-active");
+        }
+        await this.plugin.saveSettings();
+      })();
     });
     const vidBtn = typeButtons.createEl("button", {
       text: "Videos",
       cls: `cmdspace-eagle-settings-filter-btn ${hasAllVideos() ? "is-active" : ""}`
     });
-    vidBtn.addEventListener("click", async () => {
-      if (hasAllVideos()) {
-        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
-          (ext) => !SUPPORTED_VIDEO_EXTENSIONS.includes(ext)
-        );
-        vidBtn.removeClass("is-active");
-      } else {
-        SUPPORTED_VIDEO_EXTENSIONS.forEach((ext) => {
-          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
-            this.plugin.settings.searchFileTypes.push(ext);
-          }
-        });
-        vidBtn.addClass("is-active");
-      }
-      if (this.plugin.settings.searchFileTypes.length === 0) {
-        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
-        imgBtn.addClass("is-active");
-      }
-      await this.plugin.saveSettings();
+    vidBtn.addEventListener("click", () => {
+      void (async () => {
+        if (hasAllVideos()) {
+          this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+            (ext) => !SUPPORTED_VIDEO_EXTENSIONS.includes(ext)
+          );
+          vidBtn.removeClass("is-active");
+        } else {
+          SUPPORTED_VIDEO_EXTENSIONS.forEach((ext) => {
+            if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+              this.plugin.settings.searchFileTypes.push(ext);
+            }
+          });
+          vidBtn.addClass("is-active");
+        }
+        if (this.plugin.settings.searchFileTypes.length === 0) {
+          this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+          imgBtn.addClass("is-active");
+        }
+        await this.plugin.saveSettings();
+      })();
     });
     const docBtn = typeButtons.createEl("button", {
       text: "Documents",
       cls: `cmdspace-eagle-settings-filter-btn ${hasAllDocs() ? "is-active" : ""}`
     });
-    docBtn.addEventListener("click", async () => {
-      if (hasAllDocs()) {
-        this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
-          (ext) => !SUPPORTED_DOCUMENT_EXTENSIONS.includes(ext)
-        );
-        docBtn.removeClass("is-active");
-      } else {
-        SUPPORTED_DOCUMENT_EXTENSIONS.forEach((ext) => {
-          if (!this.plugin.settings.searchFileTypes.includes(ext)) {
-            this.plugin.settings.searchFileTypes.push(ext);
-          }
-        });
-        docBtn.addClass("is-active");
-      }
-      if (this.plugin.settings.searchFileTypes.length === 0) {
-        this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
-        imgBtn.addClass("is-active");
-      }
-      await this.plugin.saveSettings();
+    docBtn.addEventListener("click", () => {
+      void (async () => {
+        if (hasAllDocs()) {
+          this.plugin.settings.searchFileTypes = this.plugin.settings.searchFileTypes.filter(
+            (ext) => !SUPPORTED_DOCUMENT_EXTENSIONS.includes(ext)
+          );
+          docBtn.removeClass("is-active");
+        } else {
+          SUPPORTED_DOCUMENT_EXTENSIONS.forEach((ext) => {
+            if (!this.plugin.settings.searchFileTypes.includes(ext)) {
+              this.plugin.settings.searchFileTypes.push(ext);
+            }
+          });
+          docBtn.addClass("is-active");
+        }
+        if (this.plugin.settings.searchFileTypes.length === 0) {
+          this.plugin.settings.searchFileTypes = [...SUPPORTED_IMAGE_EXTENSIONS];
+          imgBtn.addClass("is-active");
+        }
+        await this.plugin.saveSettings();
+      })();
     });
   }
   renderCrossPlatformSettings(containerEl) {
-    const infoEl = containerEl.createEl("div", { cls: "setting-item-description" });
-    infoEl.style.marginBottom = "12px";
-    infoEl.innerHTML = `
-			<p style="margin: 0 0 8px 0;">Enable this to use the same vault on multiple computers (macOS/Windows).</p>
-			<p style="margin: 0; color: var(--text-muted);">File paths will be automatically converted based on the current computer.</p>
-		`;
+    const infoEl = containerEl.createEl("div", { cls: "setting-item-description cmds-eagle-info-block" });
+    infoEl.createEl("p", { text: "Enable this to use the same vault on multiple computers (macOS/Windows)." });
+    infoEl.createEl("p", { text: "File paths will be automatically converted based on the current computer.", cls: "cmds-eagle-muted" });
     new import_obsidian3.Setting(containerEl).setName("Enable cross-platform path conversion").setDesc("Convert file:// paths between registered computers").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableCrossPlatform).onChange(async (value) => {
       this.plugin.settings.enableCrossPlatform = value;
       await this.plugin.saveSettings();
@@ -1281,24 +1282,16 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }));
     if (this.plugin.settings.computers.length > 0) {
       const listContainer = containerEl.createDiv({ cls: "cmdspace-eagle-computer-list" });
-      listContainer.style.marginTop = "12px";
-      listContainer.style.padding = "12px";
-      listContainer.style.background = "var(--background-secondary)";
-      listContainer.style.borderRadius = "8px";
       listContainer.createEl("div", {
         text: "Registered Computers",
-        attr: { style: "font-weight: 600; margin-bottom: 12px;" }
+        cls: "cmdspace-eagle-computer-list-title"
       });
       for (const computer of this.plugin.settings.computers) {
         const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
         const computerEl = listContainer.createDiv({ cls: "cmdspace-eagle-computer-item" });
-        computerEl.style.display = "flex";
-        computerEl.style.flexDirection = "column";
-        computerEl.style.padding = "12px";
-        computerEl.style.marginBottom = "8px";
-        computerEl.style.background = "var(--background-primary)";
-        computerEl.style.borderRadius = "4px";
-        computerEl.style.border = isCurrentComputer ? "2px solid var(--interactive-accent)" : "1px solid var(--background-modifier-border)";
+        if (isCurrentComputer) {
+          computerEl.addClass("is-current");
+        }
         const headerRow = computerEl.createDiv({ attr: { style: "display: flex; justify-content: space-between; align-items: center; width: 100%;" } });
         const infoDiv = headerRow.createDiv({ attr: { style: "flex: 1;" } });
         const platformIcon = computer.platform === "darwin" ? "\u{1F34E}" : "\u{1FA9F}";
@@ -1310,7 +1303,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
           text: `${computer.platform === "darwin" ? "macOS" : "Windows"} \u2022 ${computer.username}${isCurrentComputer ? " (current)" : ""}`,
           attr: { style: "font-size: 12px; color: var(--text-muted);" }
         });
-        const deleteBtn = headerRow.createEl("button", { text: "\xD7" });
+        const deleteBtn = headerRow.createEl("button", { text: "\xD7", cls: "cmdspace-eagle-computer-delete" });
         const subPathContainer = computerEl.createDiv({ attr: { style: "margin-top: 8px; width: 100%;" } });
         subPathContainer.createEl("label", {
           text: "Sub-path (folders between /Users/name/ and sync folder)",
@@ -1322,20 +1315,22 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
           placeholder: "e.g., OneDrive or Dropbox/Work",
           attr: { style: "width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);" }
         });
-        subPathInput.addEventListener("change", async () => {
-          const idx = this.plugin.settings.computers.findIndex((c) => c.id === computer.id);
-          if (idx >= 0) {
-            this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
-            await this.plugin.saveSettings();
-          }
+        subPathInput.addEventListener("change", () => {
+          void (async () => {
+            const idx = this.plugin.settings.computers.findIndex((c) => c.id === computer.id);
+            if (idx >= 0) {
+              this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
+              await this.plugin.saveSettings();
+            }
+          })();
         });
-        deleteBtn.style.padding = "4px 8px";
-        deleteBtn.style.cursor = "pointer";
-        deleteBtn.addEventListener("click", async () => {
-          this.plugin.settings.computers = this.plugin.settings.computers.filter((c) => c.id !== computer.id);
-          await this.plugin.saveSettings();
-          this.display();
-          new import_obsidian3.Notice("Computer removed");
+        deleteBtn.addEventListener("click", () => {
+          void (async () => {
+            this.plugin.settings.computers = this.plugin.settings.computers.filter((c) => c.id !== computer.id);
+            await this.plugin.saveSettings();
+            this.display();
+            new import_obsidian3.Notice("Computer removed");
+          })();
         });
       }
     }
@@ -1393,7 +1388,7 @@ var R2Provider = class {
       formData.append("file", blob, filename);
       formData.append("filename", filename);
       formData.append("content_type", mimeType);
-      const response = await fetch(`${this.config.workerUrl}/upload`, {
+      const response = await window.fetch(`${this.config.workerUrl}/upload`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${this.config.apiKey}`
@@ -1423,7 +1418,7 @@ var R2Provider = class {
       return false;
     }
     try {
-      const response = await fetch(`${this.config.workerUrl}/health`, {
+      const response = await window.fetch(`${this.config.workerUrl}/health`, {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${this.config.apiKey}`
@@ -1486,7 +1481,7 @@ var S3Provider = class {
       );
       const signature = await this.hmacHex(signingKey, stringToSign);
       const authorizationHeader = `${algorithm} Credential=${this.config.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-      const response = await fetch(`${this.config.endpoint}/${this.config.bucket}/${key}`, {
+      const response = await window.fetch(`${this.config.endpoint}/${this.config.bucket}/${key}`, {
         method: "PUT",
         headers: {
           "Content-Type": mimeType,
@@ -1518,7 +1513,7 @@ var S3Provider = class {
       return false;
     }
     try {
-      const response = await fetch(`${this.config.endpoint}/${this.config.bucket}`, {
+      const response = await window.fetch(`${this.config.endpoint}/${this.config.bucket}`, {
         method: "HEAD"
       });
       return response.status < 500;
@@ -1570,7 +1565,7 @@ var WebDAVProvider = class {
       const key = `${this.config.uploadPath}/${Date.now()}-${filename}`;
       const uploadUrl = `${this.config.serverUrl}${key}`;
       const auth = btoa(`${this.config.username}:${this.config.password}`);
-      const response = await fetch(uploadUrl, {
+      const response = await window.fetch(uploadUrl, {
         method: "PUT",
         headers: {
           "Authorization": `Basic ${auth}`,
@@ -1600,7 +1595,7 @@ var WebDAVProvider = class {
     }
     try {
       const auth = btoa(`${this.config.username}:${this.config.password}`);
-      const response = await fetch(this.config.serverUrl, {
+      const response = await window.fetch(this.config.serverUrl, {
         method: "PROPFIND",
         headers: {
           "Authorization": `Basic ${auth}`,
@@ -1636,7 +1631,7 @@ var ImgHippoProvider = class {
       formData.append("api_key", this.config.apiKey);
       formData.append("file", blob, filename);
       formData.append("title", filename);
-      const response = await fetch(this.API_URL, {
+      const response = await window.fetch(this.API_URL, {
         method: "POST",
         body: formData
       });
@@ -1687,7 +1682,7 @@ var CustomProvider = class {
       const formData = new FormData();
       formData.append("file", blob, filename);
       formData.append("filename", filename);
-      const response = await fetch(this.config.uploadUrl, {
+      const response = await window.fetch(this.config.uploadUrl, {
         method: "POST",
         headers: this.config.headers,
         body: formData
@@ -1716,7 +1711,7 @@ var CustomProvider = class {
       return false;
     }
     try {
-      const response = await fetch(this.config.uploadUrl, {
+      const response = await window.fetch(this.config.uploadUrl, {
         method: "HEAD",
         headers: this.config.headers
       });
@@ -1799,11 +1794,15 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
       }
     });
     this.registerEvent(
+      // defaultPrevented check and preventDefault() are handled inside handlePaste().
+      // eslint-disable-next-line obsidianmd/editor-drop-paste
       this.app.workspace.on("editor-paste", async (evt, editor) => {
         await this.handlePaste(evt, editor);
       })
     );
     this.registerEvent(
+      // defaultPrevented check and preventDefault() are handled inside handleDrop().
+      // eslint-disable-next-line obsidianmd/editor-drop-paste
       this.app.workspace.on("editor-drop", async (evt, editor) => {
         await this.handleDrop(evt, editor);
       })
@@ -1824,12 +1823,12 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
-        setTimeout(() => this.processActiveView(), 100);
+        window.setTimeout(() => this.processActiveView(), 100);
       })
     );
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        setTimeout(() => this.processActiveView(), 100);
+        window.setTimeout(() => this.processActiveView(), 100);
       })
     );
     this.registerEvent(
@@ -1847,7 +1846,9 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
         if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
           if (this.lastModifiedFile !== file.path) {
             console.log(`[CMDS Eagle] Triggering auto-conversion for: ${file.path}`);
-            setTimeout(() => this.autoConvertOnFileOpen(file), 300);
+            window.setTimeout(() => {
+              void this.autoConvertOnFileOpen(file);
+            }, 300);
           } else {
             console.log(`[CMDS Eagle] Skipping - file was just modified by us`);
           }
@@ -1883,7 +1884,7 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
       new import_obsidian4.Notice("Could not fetch item info from Eagle");
       return;
     }
-    this.insertItemLink(editor, item);
+    void this.insertItemLink(editor, item);
     new import_obsidian4.Notice(`Inserted link to: ${item.name}`);
   }
   async insertItemLink(editor, item) {
@@ -2287,7 +2288,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (convertedPath !== extractedPath) {
       const newSrc = this.pathToFileUrl(convertedPath);
       console.log(`[CMDS Eagle] Setting new src: ${newSrc}`);
-      const newImg = document.createElement("img");
+      const newImg = activeDocument.createElement("img");
       newImg.src = newSrc;
       newImg.alt = img.alt;
       newImg.className = img.className;
@@ -2404,6 +2405,8 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   async handlePaste(evt, editor) {
+    if (evt.defaultPrevented)
+      return;
     const clipboardData = evt.clipboardData;
     if (!clipboardData)
       return;
@@ -2461,6 +2464,8 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   async handleDrop(evt, editor) {
+    if (evt.defaultPrevented)
+      return;
     const { files } = evt.dataTransfer || { files: null };
     if (!files || !this.allFilesAreImages(files))
       return;
@@ -2767,12 +2772,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         1e4
       );
       const noticeEl = notice.noticeEl;
-      noticeEl.style.cursor = "pointer";
+      noticeEl.addClass("cmds-eagle-clickable-notice");
       noticeEl.onclick = () => {
         notice.hide();
         resolve(true);
       };
-      setTimeout(() => resolve(false), 1e4);
+      window.setTimeout(() => resolve(false), 1e4);
     });
   }
   async replaceAllReferences(references, originalFile, newUrl) {
@@ -2990,7 +2995,8 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       return adapter.basePath;
     }
     const configDir = this.app.vault.configDir;
-    return configDir.replace("/.obsidian", "");
+    const sep = configDir.lastIndexOf("/");
+    return sep > 0 ? configDir.slice(0, sep) : configDir;
   }
   getAbsolutePath(relativePath) {
     const vaultPath = this.getVaultPath();
@@ -3000,7 +3006,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     return `${vaultPath}/${relativePath}`;
   }
   delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
   allFilesAreImages(files) {
     if (!files || files.length === 0)
@@ -3097,9 +3103,9 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const allContainers = [
       view.contentEl,
       view.containerEl,
-      document.querySelector(".workspace-leaf.mod-active .view-content"),
-      document.querySelector(".workspace-leaf.mod-active .markdown-preview-view"),
-      document.querySelector(".workspace-leaf.mod-active .cm-content")
+      activeDocument.querySelector(".workspace-leaf.mod-active .view-content"),
+      activeDocument.querySelector(".workspace-leaf.mod-active .markdown-preview-view"),
+      activeDocument.querySelector(".workspace-leaf.mod-active .cm-content")
     ].filter(Boolean);
     let convertedCount = 0;
     const processedSrcs = /* @__PURE__ */ new Set();

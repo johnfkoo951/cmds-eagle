@@ -1,23 +1,30 @@
 {
 	"name": "cmdspace-link-eagle",
-	"version": "1.6.0",
+	"version": "1.6.1",
 	"description": "CMDSPACE Link: Eagle - Obsidian plugin for Eagle integration",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"lint": "eslint src/",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": ["obsidian", "eagle", "cmdspace", "asset-management"],
+	"keywords": [
+		"obsidian",
+		"eagle",
+		"cmdspace",
+		"asset-management"
+	],
 	"author": "Yohan Koo",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^16.11.6",
-		"@typescript-eslint/eslint-plugin": "5.29.0",
-		"@typescript-eslint/parser": "5.29.0",
 		"esbuild": "0.17.3",
+		"eslint": "^9.39.4",
+		"eslint-plugin-obsidianmd": "^0.3.0",
 		"obsidian": "latest",
 		"tslib": "2.4.0",
-		"typescript": "4.7.4"
+		"typescript": "4.7.4",
+		"typescript-eslint": "^8.60.0"
 	}
 }

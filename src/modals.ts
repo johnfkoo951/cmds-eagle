@@ -47,7 +47,7 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	}
 
 	async onOpen(): Promise<void> {
-		super.onOpen();
+		void super.onOpen();
 		this.buildFilterUI();
 		await this.loadItems();
 	}
@@ -256,7 +256,7 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	}
 
 	onChooseItem(item: EagleItem, evt: MouseEvent | KeyboardEvent): void {
-		this.insertItemLink(item);
+		void this.insertItemLink(item);
 	}
 
 	private async insertItemLink(item: EagleItem): Promise<void> {

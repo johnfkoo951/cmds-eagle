@@ -83,12 +83,16 @@ export default class CMDSPACELinkEagle extends Plugin {
 
 
 		this.registerEvent(
+			// defaultPrevented check and preventDefault() are handled inside handlePaste().
+			// eslint-disable-next-line obsidianmd/editor-drop-paste
 			this.app.workspace.on('editor-paste', async (evt: ClipboardEvent, editor: Editor) => {
 				await this.handlePaste(evt, editor);
 			})
 		);
 
 		this.registerEvent(
+			// defaultPrevented check and preventDefault() are handled inside handleDrop().
+			// eslint-disable-next-line obsidianmd/editor-drop-paste
 			this.app.workspace.on('editor-drop', async (evt: DragEvent, editor: Editor) => {
 				await this.handleDrop(evt, editor);
 			})
@@ -115,13 +119,13 @@ export default class CMDSPACELinkEagle extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on('active-leaf-change', () => {
-				setTimeout(() => this.processActiveView(), 100);
+				window.setTimeout(() => this.processActiveView(), 100);
 			})
 		);
 
 		this.registerEvent(
 			this.app.workspace.on('layout-change', () => {
-				setTimeout(() => this.processActiveView(), 100);
+				window.setTimeout(() => this.processActiveView(), 100);
 			})
 		);
 
@@ -142,7 +146,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 				if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
 					if (this.lastModifiedFile !== file.path) {
 						console.log(`[CMDS Eagle] Triggering auto-conversion for: ${file.path}`);
-						setTimeout(() => this.autoConvertOnFileOpen(file), 300);
+						window.setTimeout(() => { void this.autoConvertOnFileOpen(file); }, 300);
 					} else {
 						console.log(`[CMDS Eagle] Skipping - file was just modified by us`);
 					}
@@ -186,7 +190,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 			return;
 		}
 
-		this.insertItemLink(editor, item);
+		void this.insertItemLink(editor, item);
 		new Notice(`Inserted link to: ${item.name}`);
 	}
 
@@ -680,7 +684,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			const newSrc = this.pathToFileUrl(convertedPath);
 			console.log(`[CMDS Eagle] Setting new src: ${newSrc}`);
 			
-			const newImg = document.createElement('img');
+			const newImg = activeDocument.createElement('img');
 			newImg.src = newSrc;
 			newImg.alt = img.alt;
 			newImg.className = img.className;
@@ -808,6 +812,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private async handlePaste(evt: ClipboardEvent, editor: Editor): Promise<void> {
+		if (evt.defaultPrevented) return;
 		const clipboardData = evt.clipboardData;
 		if (!clipboardData) return;
 
@@ -876,6 +881,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private async handleDrop(evt: DragEvent, editor: Editor): Promise<void> {
+		if (evt.defaultPrevented) return;
 		const { files } = evt.dataTransfer || { files: null };
 		if (!files || !this.allFilesAreImages(files)) return;
 
@@ -1248,13 +1254,13 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			);
 			
 			const noticeEl = (notice as unknown as { noticeEl: HTMLElement }).noticeEl;
-			noticeEl.style.cursor = 'pointer';
+			noticeEl.addClass('cmds-eagle-clickable-notice');
 			noticeEl.onclick = () => {
 				notice.hide();
 				resolve(true);
 			};
 			
-			setTimeout(() => resolve(false), 10000);
+			window.setTimeout(() => resolve(false), 10000);
 		});
 	}
 
@@ -1522,7 +1528,8 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			return adapter.basePath;
 		}
 		const configDir = this.app.vault.configDir;
-		return configDir.replace('/.obsidian', '');
+		const sep = configDir.lastIndexOf('/');
+		return sep > 0 ? configDir.slice(0, sep) : configDir;
 	}
 
 	private getAbsolutePath(relativePath: string): string {
@@ -1534,7 +1541,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private delay(ms: number): Promise<void> {
-		return new Promise(resolve => setTimeout(resolve, ms));
+		return new Promise(resolve => window.setTimeout(resolve, ms));
 	}
 
 	private allFilesAreImages(files: FileList): boolean {
@@ -1650,9 +1657,9 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const allContainers = [
 			view.contentEl,
 			view.containerEl,
-			document.querySelector('.workspace-leaf.mod-active .view-content'),
-			document.querySelector('.workspace-leaf.mod-active .markdown-preview-view'),
-			document.querySelector('.workspace-leaf.mod-active .cm-content'),
+			activeDocument.querySelector('.workspace-leaf.mod-active .view-content'),
+			activeDocument.querySelector('.workspace-leaf.mod-active .markdown-preview-view'),
+			activeDocument.querySelector('.workspace-leaf.mod-active .cm-content'),
 		].filter(Boolean) as HTMLElement[];
 
 		let convertedCount = 0;

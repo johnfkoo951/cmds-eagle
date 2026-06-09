@@ -20,3 +20,6 @@ Thumbs.db
 # Temp files
 *.log
 .eagle-temp/
+
+# OMC state
+.omc/
