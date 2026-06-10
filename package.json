@@ -1,6 +1,6 @@
 {
 	"name": "cmdspace-link-eagle",
-	"version": "1.6.2",
+	"version": "1.6.3",
 	"description": "CMDSPACE Link: Eagle - Obsidian plugin for Eagle integration",
 	"main": "main.js",
 	"scripts": {
