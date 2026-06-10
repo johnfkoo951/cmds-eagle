@@ -483,15 +483,15 @@ export class CustomProvider implements CloudProvider {
 export function createCloudProvider(config: AnyCloudProviderConfig): CloudProvider | null {
 	switch (config.type) {
 		case 'r2':
-			return new R2Provider(config as R2ProviderConfig);
+			return new R2Provider(config);
 		case 's3':
-			return new S3Provider(config as S3ProviderConfig);
+			return new S3Provider(config);
 		case 'webdav':
-			return new WebDAVProvider(config as WebDAVProviderConfig);
+			return new WebDAVProvider(config);
 		case 'imghippo':
-			return new ImgHippoProvider(config as ImgHippoProviderConfig);
+			return new ImgHippoProvider(config);
 		case 'custom':
-			return new CustomProvider(config as CustomProviderConfig);
+			return new CustomProvider(config);
 		default:
 			return null;
 	}

@@ -8,9 +8,8 @@ import {
 	Setting,
 } from 'obsidian';
 import { 
-	EagleItem, 
-	CMDSPACEEagleSettings, 
-	ImagePasteBehavior,
+	EagleItem,
+	CMDSPACEEagleSettings,
 	SearchScope,
 	SUPPORTED_IMAGE_EXTENSIONS,
 	SUPPORTED_VIDEO_EXTENSIONS,

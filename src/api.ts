@@ -174,8 +174,11 @@ export class EagleApiService {
 				url: `${this.baseUrl}/api/library/info`,
 				method: 'GET',
 			});
-			const json = response.json;
-			
+			const json = response.json as {
+				status?: string;
+				data?: { library?: string | { path?: string }; path?: string };
+			};
+
 			if (json?.status === 'success' && json?.data) {
 				const data = json.data;
 				if (typeof data.library === 'string') {
@@ -286,8 +289,8 @@ export class EagleApiService {
 			let fileBuffer: Buffer;
 			try {
 				fileBuffer = await fs.readFile(filePath);
-			} catch (fsError) {
-				return { 
+			} catch {
+				return {
 					success: false, 
 					error: `Could not read file: ${filePath}` 
 				};

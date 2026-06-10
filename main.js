@@ -350,7 +350,7 @@ var EagleApiService = class {
       let fileBuffer;
       try {
         fileBuffer = await import_fs.promises.readFile(filePath);
-      } catch (fsError) {
+      } catch (e) {
         return {
           success: false,
           error: `Could not read file: ${filePath}`
@@ -1794,17 +1794,23 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
       }
     });
     this.registerEvent(
-      // defaultPrevented check and preventDefault() are handled inside handlePaste().
-      // eslint-disable-next-line obsidianmd/editor-drop-paste
-      this.app.workspace.on("editor-paste", async (evt, editor) => {
-        await this.handlePaste(evt, editor);
+      this.app.workspace.on("editor-paste", (evt, editor) => {
+        if (evt.defaultPrevented)
+          return;
+        if (!this.willHandlePaste(evt))
+          return;
+        evt.preventDefault();
+        void this.handlePaste(evt, editor);
       })
     );
     this.registerEvent(
-      // defaultPrevented check and preventDefault() are handled inside handleDrop().
-      // eslint-disable-next-line obsidianmd/editor-drop-paste
-      this.app.workspace.on("editor-drop", async (evt, editor) => {
-        await this.handleDrop(evt, editor);
+      this.app.workspace.on("editor-drop", (evt, editor) => {
+        if (evt.defaultPrevented)
+          return;
+        if (!this.willHandleDrop(evt))
+          return;
+        evt.preventDefault();
+        void this.handleDrop(evt, editor);
       })
     );
     this.registerEvent(
@@ -1929,7 +1935,6 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     const dimensions = item.width && item.height ? `${item.width}\xD7${item.height}` : "N/A";
     const imageUrl = this.getImageUrl(item);
     const cloudUrl = this.api.getCloudUrl(item);
-    const localUrl = this.api.getLocalThumbnailUrl(item.id);
     const isUploaded = hasR2Upload(item);
     let imageSection = "";
     if (this.settings.embedImageInCard && imageUrl) {
@@ -2047,8 +2052,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     await this.app.fileManager.processFrontMatter(activeFile, (frontmatter) => {
       const existingTags = frontmatter.tags || [];
-      const newTags = [.../* @__PURE__ */ new Set([...existingTags, ...allTags])];
-      frontmatter.tags = newTags;
+      frontmatter.tags = [.../* @__PURE__ */ new Set([...existingTags, ...allTags])];
     });
     new import_obsidian4.Notice(`Added ${allTags.size} tags from Eagle items`);
   }
@@ -2404,20 +2408,32 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
+  // Synchronous gate for the editor-paste handler. preventDefault() must be
+  // called synchronously, so detection happens here before delegating async work.
+  willHandlePaste(evt) {
+    const clipboardData = evt.clipboardData;
+    if (!clipboardData)
+      return false;
+    const text = clipboardData.getData("text/plain").trim();
+    if (isEagleLocalhostUrl(text))
+      return true;
+    if (this.isEagleLibraryPath(text))
+      return true;
+    const { files } = clipboardData;
+    if (!files || !this.allFilesAreImages(files))
+      return false;
+    return this.settings.imagePasteBehavior !== "local";
+  }
   async handlePaste(evt, editor) {
-    if (evt.defaultPrevented)
-      return;
     const clipboardData = evt.clipboardData;
     if (!clipboardData)
       return;
     const text = clipboardData.getData("text/plain").trim();
     if (isEagleLocalhostUrl(text)) {
-      evt.preventDefault();
       await this.handleEagleLocalhostUrlPaste(text, editor);
       return;
     }
     if (this.isEagleLibraryPath(text)) {
-      evt.preventDefault();
       await this.handleEagleLibraryPathPaste(text, editor);
       return;
     }
@@ -2427,7 +2443,6 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (this.settings.imagePasteBehavior === "local") {
       return;
     }
-    evt.preventDefault();
     const filesCopy = Array.from(files);
     if (this.settings.imagePasteBehavior === "eagle") {
       for (const file of filesCopy) {
@@ -2463,16 +2478,20 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
   }
+  // Synchronous gate for the editor-drop handler (see willHandlePaste).
+  willHandleDrop(evt) {
+    const { files } = evt.dataTransfer || { files: null };
+    if (!files || !this.allFilesAreImages(files))
+      return false;
+    return this.settings.imagePasteBehavior !== "local";
+  }
   async handleDrop(evt, editor) {
-    if (evt.defaultPrevented)
-      return;
     const { files } = evt.dataTransfer || { files: null };
     if (!files || !this.allFilesAreImages(files))
       return;
     if (this.settings.imagePasteBehavior === "local") {
       return;
     }
-    evt.preventDefault();
     const filesCopy = Array.from(files);
     if (this.settings.imagePasteBehavior === "eagle") {
       for (const file of filesCopy) {

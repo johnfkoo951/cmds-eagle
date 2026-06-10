@@ -12,7 +12,6 @@ import {
 	CMDSPACEEagleSettings,
 	DEFAULT_SETTINGS,
 	EagleItem,
-	ImagePasteBehavior,
 	ComputerProfile,
 	PlatformType,
 } from './types';
@@ -23,7 +22,6 @@ import {
 	hasR2Upload,
 	parseEagleLocalhostUrl,
 	isEagleLocalhostUrl,
-	buildEagleLocalhostThumbnailUrl,
 } from './api';
 import { EagleSearchModal, ImagePasteChoiceModal } from './modals';
 import { CMDSPACEEagleSettingTab } from './settings';
@@ -83,18 +81,20 @@ export default class CMDSPACELinkEagle extends Plugin {
 
 
 		this.registerEvent(
-			// defaultPrevented check and preventDefault() are handled inside handlePaste().
-			// eslint-disable-next-line obsidianmd/editor-drop-paste
-			this.app.workspace.on('editor-paste', async (evt: ClipboardEvent, editor: Editor) => {
-				await this.handlePaste(evt, editor);
+			this.app.workspace.on('editor-paste', (evt: ClipboardEvent, editor: Editor) => {
+				if (evt.defaultPrevented) return;
+				if (!this.willHandlePaste(evt)) return;
+				evt.preventDefault();
+				void this.handlePaste(evt, editor);
 			})
 		);
 
 		this.registerEvent(
-			// defaultPrevented check and preventDefault() are handled inside handleDrop().
-			// eslint-disable-next-line obsidianmd/editor-drop-paste
-			this.app.workspace.on('editor-drop', async (evt: DragEvent, editor: Editor) => {
-				await this.handleDrop(evt, editor);
+			this.app.workspace.on('editor-drop', (evt: DragEvent, editor: Editor) => {
+				if (evt.defaultPrevented) return;
+				if (!this.willHandleDrop(evt)) return;
+				evt.preventDefault();
+				void this.handleDrop(evt, editor);
 			})
 		);
 
@@ -252,7 +252,6 @@ export default class CMDSPACELinkEagle extends Plugin {
 		
 		const imageUrl = this.getImageUrl(item);
 		const cloudUrl = this.api.getCloudUrl(item);
-		const localUrl = this.api.getLocalThumbnailUrl(item.id);
 		const isUploaded = hasR2Upload(item);
 
 		let imageSection = '';
@@ -387,10 +386,9 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			return;
 		}
 
-		await this.app.fileManager.processFrontMatter(activeFile, (frontmatter) => {
+		await this.app.fileManager.processFrontMatter(activeFile, (frontmatter: { tags?: string[] }) => {
 			const existingTags = frontmatter.tags || [];
-			const newTags = [...new Set([...existingTags, ...allTags])];
-			frontmatter.tags = newTags;
+			frontmatter.tags = [...new Set([...existingTags, ...allTags])];
 		});
 
 		new Notice(`Added ${allTags.size} tags from Eagle items`);
@@ -739,7 +737,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		if (!this.settings.enableCrossPlatform) return;
 		if (this.settings.crossPlatformConversionMode !== 'render-only') return;
 
-		const images = el.querySelectorAll('img') as NodeListOf<HTMLImageElement>;
+		const images = el.querySelectorAll('img');
 		images.forEach((img) => {
 			this.convertImageSrcForRendering(img);
 		});
@@ -811,21 +809,33 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
+	// Synchronous gate for the editor-paste handler. preventDefault() must be
+	// called synchronously, so detection happens here before delegating async work.
+	private willHandlePaste(evt: ClipboardEvent): boolean {
+		const clipboardData = evt.clipboardData;
+		if (!clipboardData) return false;
+
+		const text = clipboardData.getData('text/plain').trim();
+		if (isEagleLocalhostUrl(text)) return true;
+		if (this.isEagleLibraryPath(text)) return true;
+
+		const { files } = clipboardData;
+		if (!files || !this.allFilesAreImages(files)) return false;
+		return this.settings.imagePasteBehavior !== 'local';
+	}
+
 	private async handlePaste(evt: ClipboardEvent, editor: Editor): Promise<void> {
-		if (evt.defaultPrevented) return;
 		const clipboardData = evt.clipboardData;
 		if (!clipboardData) return;
 
 		const text = clipboardData.getData('text/plain').trim();
-		
+
 		if (isEagleLocalhostUrl(text)) {
-			evt.preventDefault();
 			await this.handleEagleLocalhostUrlPaste(text, editor);
 			return;
 		}
 
 		if (this.isEagleLibraryPath(text)) {
-			evt.preventDefault();
 			await this.handleEagleLibraryPathPaste(text, editor);
 			return;
 		}
@@ -836,8 +846,6 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		if (this.settings.imagePasteBehavior === 'local') {
 			return;
 		}
-
-		evt.preventDefault();
 
 		const filesCopy = Array.from(files);
 
@@ -861,7 +869,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const response = await modal.getResponse();
 
 		if (response.rememberChoice && response.choice !== 'cancel') {
-			this.settings.imagePasteBehavior = response.choice as ImagePasteBehavior;
+			this.settings.imagePasteBehavior = response.choice;
 			await this.saveSettings();
 		}
 
@@ -880,16 +888,20 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		}
 	}
 
+	// Synchronous gate for the editor-drop handler (see willHandlePaste).
+	private willHandleDrop(evt: DragEvent): boolean {
+		const { files } = evt.dataTransfer || { files: null };
+		if (!files || !this.allFilesAreImages(files)) return false;
+		return this.settings.imagePasteBehavior !== 'local';
+	}
+
 	private async handleDrop(evt: DragEvent, editor: Editor): Promise<void> {
-		if (evt.defaultPrevented) return;
 		const { files } = evt.dataTransfer || { files: null };
 		if (!files || !this.allFilesAreImages(files)) return;
 
 		if (this.settings.imagePasteBehavior === 'local') {
 			return;
 		}
-
-		evt.preventDefault();
 
 		const filesCopy = Array.from(files);
 
@@ -913,7 +925,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const response = await modal.getResponse();
 
 		if (response.rememberChoice && response.choice !== 'cancel') {
-			this.settings.imagePasteBehavior = response.choice as ImagePasteBehavior;
+			this.settings.imagePasteBehavior = response.choice;
 			await this.saveSettings();
 		}
 
@@ -1666,7 +1678,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const processedSrcs = new Set<string>();
 
 		for (const container of allContainers) {
-			const images = container.querySelectorAll('img') as NodeListOf<HTMLImageElement>;
+			const images = container.querySelectorAll('img');
 			console.log(`[CMDS Eagle] Found ${images.length} images in container`);
 
 			images.forEach((img) => {
@@ -1731,7 +1743,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		if (!view) return;
 
 		const contentEl = view.contentEl;
-		const images = contentEl.querySelectorAll('img') as NodeListOf<HTMLImageElement>;
+		const images = contentEl.querySelectorAll('img');
 		let convertedCount = 0;
 
 		images.forEach((img) => {

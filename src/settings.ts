@@ -10,7 +10,6 @@ import {
 	SUPPORTED_DOCUMENT_EXTENSIONS,
 	ComputerProfile,
 	PlatformType,
-	CrossPlatformConversionMode,
 } from './types';
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
