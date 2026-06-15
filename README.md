@@ -14,12 +14,11 @@ Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your v
 
 ## Installation
 
-### Using BRAT (Recommended)
+### From Community Plugins (Recommended)
 
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin
-2. Open BRAT settings → Add Beta Plugin
-3. Enter: `johnfkoo951/cmds-eagle`
-4. Enable the plugin
+1. Open **Settings → Community plugins** in Obsidian
+2. Click **Browse** and search for **CMDS Eagle**
+3. Click **Install**, then **Enable**
 
 ### Manual Installation
 
