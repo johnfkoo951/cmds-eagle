@@ -2855,11 +2855,22 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     return normalizedText.includes(".library/images/") && normalizedText.includes(".info/");
   }
   async handleEagleLibraryPathPaste(path, editor) {
-    const normalizedPath = path.replace(/\\/g, "/");
-    const filename = normalizedPath.split("/").pop() || "image";
-    const fileUrl = this.pathToFileUrl(normalizedPath);
-    const markdown = `![${filename}](${fileUrl})`;
-    editor.replaceSelection(markdown);
+    const normalizedPath = this.safeDecodeUri(path.replace(/\\/g, "/")).replace(/^file:\/\/+/, "/");
+    const idMatch = normalizedPath.match(/\/([A-Za-z0-9]+)\.info\//);
+    if (idMatch) {
+      const item = await this.api.getItemInfo(idMatch[1]);
+      if (item) {
+        const folderPath = normalizedPath.substring(0, normalizedPath.lastIndexOf("/"));
+        const originalPath = `${folderPath}/${item.name}.${item.ext}`;
+        const filename2 = `${item.name}.${item.ext}`;
+        editor.replaceSelection(`![${filename2}](${this.pathToFileUrl(originalPath)})`);
+        new import_obsidian4.Notice(`Embedded: ${filename2}`);
+        return;
+      }
+    }
+    const fallbackPath = normalizedPath.replace(/_thumbnail(\.[A-Za-z0-9]+)$/, "$1");
+    const filename = fallbackPath.split("/").pop() || "image";
+    editor.replaceSelection(`![${filename}](${this.pathToFileUrl(fallbackPath)})`);
     new import_obsidian4.Notice(`Embedded: ${filename}`);
   }
   async getEagleItemFilePath(itemId, name, ext) {

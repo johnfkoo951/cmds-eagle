@@ -1343,11 +1343,30 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 	}
 
 	private async handleEagleLibraryPathPaste(path: string, editor: Editor): Promise<void> {
-		const normalizedPath = path.replace(/\\/g, '/');
-		const filename = normalizedPath.split('/').pop() || 'image';
-		const fileUrl = this.pathToFileUrl(normalizedPath);
-		const markdown = `![${filename}](${fileUrl})`;
-		editor.replaceSelection(markdown);
+		// pathToFileUrl expects a plain filesystem path, so strip any file:// scheme.
+		const normalizedPath = this.safeDecodeUri(path.replace(/\\/g, '/')).replace(/^file:\/\/+/, '/');
+
+		// Eagle puts the *thumbnail* file path on the clipboard. The enclosing
+		// ".../<itemId>.info/" folder holds both the thumbnail and the original,
+		// and its name is the Eagle item id — use it to resolve the original asset.
+		const idMatch = normalizedPath.match(/\/([A-Za-z0-9]+)\.info\//);
+		if (idMatch) {
+			const item = await this.api.getItemInfo(idMatch[1]);
+			if (item) {
+				const folderPath = normalizedPath.substring(0, normalizedPath.lastIndexOf('/'));
+				const originalPath = `${folderPath}/${item.name}.${item.ext}`;
+				const filename = `${item.name}.${item.ext}`;
+				editor.replaceSelection(`![${filename}](${this.pathToFileUrl(originalPath)})`);
+				new Notice(`Embedded: ${filename}`);
+				return;
+			}
+		}
+
+		// Fallback (Eagle unreachable / unexpected path): drop a "_thumbnail" suffix
+		// if present so we still prefer the original, otherwise embed verbatim.
+		const fallbackPath = normalizedPath.replace(/_thumbnail(\.[A-Za-z0-9]+)$/, '$1');
+		const filename = fallbackPath.split('/').pop() || 'image';
+		editor.replaceSelection(`![${filename}](${this.pathToFileUrl(fallbackPath)})`);
 		new Notice(`Embedded: ${filename}`);
 	}
 
