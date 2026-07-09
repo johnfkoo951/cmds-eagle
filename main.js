@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => CMDSPACELinkEagle
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/types.ts
 var SUPPORTED_IMAGE_EXTENSIONS = [
@@ -65,6 +65,8 @@ var DEFAULT_SETTINGS = {
   embedImageInCard: true,
   insertAsEmbed: true,
   imagePasteBehavior: "ask",
+  excalidrawIntegration: true,
+  excalidrawImportToEagle: true,
   activeCloudProvider: "imghippo",
   searchScope: ["name", "tags"],
   searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],
@@ -941,6 +943,17 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.imagePasteBehavior = value;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian3.Setting(containerEl).setName("Excalidraw integration").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("Embed images in Excalidraw via cloud").setDesc("When you paste or drop an image onto an Excalidraw canvas, upload it to your cloud provider and embed the URL instead of saving a vault attachment. Eagle assets are resolved to the original; screenshots are uploaded as-is. Requires the Excalidraw plugin and a configured cloud provider.").addToggle((toggle) => toggle.setValue(this.plugin.settings.excalidrawIntegration).onChange(async (value) => {
+      this.plugin.settings.excalidrawIntegration = value;
+      await this.plugin.saveSettings();
+      if (value)
+        this.plugin.scanAndAttachExcalidrawContainers();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Also add pasted screenshots to Eagle").setDesc("When pasting a clipboard image (not already in Eagle) onto a canvas, also import it into your Eagle library (into the default folder, if set).").addToggle((toggle) => toggle.setValue(this.plugin.settings.excalidrawImportToEagle).onChange(async (value) => {
+      this.plugin.settings.excalidrawImportToEagle = value;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian3.Setting(containerEl).setName("Search & embed").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc("Add metadata (type, size, tags, Eagle link) below the image when embedding").addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
       this.plugin.settings.insertThumbnail = value;
@@ -1353,6 +1366,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
 };
 
 // src/cloud-providers.ts
+var import_obsidian4 = require("obsidian");
 var import_fs2 = require("fs");
 function getMimeType2(ext) {
   const MIME_TYPES2 = {
@@ -1626,20 +1640,41 @@ var ImgHippoProvider = class {
     }
     try {
       const fileBuffer = await import_fs2.promises.readFile(filePath);
-      const blob = new Blob([fileBuffer], { type: mimeType });
-      const formData = new FormData();
-      formData.append("api_key", this.config.apiKey);
-      formData.append("file", blob, filename);
-      formData.append("title", filename);
-      const response = await window.fetch(this.API_URL, {
+      const boundary = `----CmdsEagleBoundary${Date.now().toString(16)}`;
+      const encoder = new TextEncoder();
+      const head = encoder.encode(
+        `--${boundary}\r
+Content-Disposition: form-data; name="api_key"\r
+\r
+${this.config.apiKey}\r
+--${boundary}\r
+Content-Disposition: form-data; name="title"\r
+\r
+${filename}\r
+--${boundary}\r
+Content-Disposition: form-data; name="file"; filename="${filename}"\r
+Content-Type: ${mimeType}\r
+\r
+`
+      );
+      const tail = encoder.encode(`\r
+--${boundary}--\r
+`);
+      const body = new Uint8Array(head.length + fileBuffer.length + tail.length);
+      body.set(head, 0);
+      body.set(fileBuffer, head.length);
+      body.set(tail, head.length + fileBuffer.length);
+      const response = await (0, import_obsidian4.requestUrl)({
+        url: this.API_URL,
         method: "POST",
-        body: formData
+        contentType: `multipart/form-data; boundary=${boundary}`,
+        body: body.buffer,
+        throw: false
       });
-      if (!response.ok) {
-        const errorText = await response.text();
-        return { success: false, error: `ImgHippo upload failed (${response.status}): ${errorText}` };
+      if (response.status < 200 || response.status >= 300) {
+        return { success: false, error: `ImgHippo upload failed (${response.status}): ${(response.text || "").slice(0, 200)}` };
       }
-      const result = await response.json();
+      const result = response.json;
       if (!result.success || !result.data) {
         return { success: false, error: result.message || "Upload failed" };
       }
@@ -1749,10 +1784,11 @@ function getExtFromFilename(filename) {
 }
 
 // src/main.ts
-var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
+var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.lastModifiedFile = null;
+    this.attachedExcalidrawContainers = /* @__PURE__ */ new WeakSet();
   }
   async onload() {
     console.log("[CMDS Eagle] Loading plugin v1.6.0");
@@ -1865,12 +1901,14 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     this.addRibbonIcon("image", "CMDSPACE: Eagle", () => {
       new EagleSearchModal(this.app, this.api, this.settings).open();
     });
+    this.registerExcalidrawIntegration();
   }
   onunload() {
     console.log("[CMDS Eagle] Unloading plugin");
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const saved = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1882,16 +1920,16 @@ var CMDSPACELinkEagle = class extends import_obsidian4.Plugin {
     const clipboardText = await navigator.clipboard.readText();
     const parsed = parseEagleUrl(clipboardText.trim());
     if (!parsed || parsed.type !== "item") {
-      new import_obsidian4.Notice("Clipboard does not contain a valid Eagle item URL");
+      new import_obsidian5.Notice("Clipboard does not contain a valid Eagle item URL");
       return;
     }
     const item = await this.api.getItemInfo(parsed.id);
     if (!item) {
-      new import_obsidian4.Notice("Could not fetch item info from Eagle");
+      new import_obsidian5.Notice("Could not fetch item info from Eagle");
       return;
     }
     void this.insertItemLink(editor, item);
-    new import_obsidian4.Notice(`Inserted link to: ${item.name}`);
+    new import_obsidian5.Notice(`Inserted link to: ${item.name}`);
   }
   async insertItemLink(editor, item) {
     if (this.settings.insertAsEmbed) {
@@ -1977,23 +2015,23 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   async refreshCurrentNoteMetadata() {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     const content = await this.app.vault.read(activeFile);
     const eagleLinks = this.extractEagleLinks(content);
     if (eagleLinks.length === 0) {
-      new import_obsidian4.Notice("No Eagle links found in current note");
+      new import_obsidian5.Notice("No Eagle links found in current note");
       return;
     }
-    new import_obsidian4.Notice(`Found ${eagleLinks.length} Eagle links. Refreshing...`);
+    new import_obsidian5.Notice(`Found ${eagleLinks.length} Eagle links. Refreshing...`);
     for (const id of eagleLinks) {
       const item = await this.api.getItemInfo(id);
       if (item) {
         console.log(`Refreshed: ${item.name}`);
       }
     }
-    new import_obsidian4.Notice("Eagle metadata refreshed");
+    new import_obsidian5.Notice("Eagle metadata refreshed");
   }
   extractEagleLinks(content) {
     const regex = /eagle:\/\/item\/([A-Z0-9]+)/gi;
@@ -2008,7 +2046,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     var _a;
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     const metadata = this.app.metadataCache.getFileCache(activeFile);
@@ -2016,7 +2054,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const content = await this.app.vault.read(activeFile);
     const eagleLinks = this.extractEagleLinks(content);
     if (eagleLinks.length === 0) {
-      new import_obsidian4.Notice("No Eagle links found in current note");
+      new import_obsidian5.Notice("No Eagle links found in current note");
       return;
     }
     let updated = 0;
@@ -2025,18 +2063,18 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       if (success)
         updated++;
     }
-    new import_obsidian4.Notice(`Synced tags to ${updated}/${eagleLinks.length} Eagle items`);
+    new import_obsidian5.Notice(`Synced tags to ${updated}/${eagleLinks.length} Eagle items`);
   }
   async syncTagsFromEagle() {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     const content = await this.app.vault.read(activeFile);
     const eagleLinks = this.extractEagleLinks(content);
     if (eagleLinks.length === 0) {
-      new import_obsidian4.Notice("No Eagle links found in current note");
+      new import_obsidian5.Notice("No Eagle links found in current note");
       return;
     }
     const allTags = /* @__PURE__ */ new Set();
@@ -2047,24 +2085,24 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
     if (allTags.size === 0) {
-      new import_obsidian4.Notice("No tags found in linked Eagle items");
+      new import_obsidian5.Notice("No tags found in linked Eagle items");
       return;
     }
     await this.app.fileManager.processFrontMatter(activeFile, (frontmatter) => {
       const existingTags = frontmatter.tags || [];
       frontmatter.tags = [.../* @__PURE__ */ new Set([...existingTags, ...allTags])];
     });
-    new import_obsidian4.Notice(`Added ${allTags.size} tags from Eagle items`);
+    new import_obsidian5.Notice(`Added ${allTags.size} tags from Eagle items`);
   }
   async captureUrlToEagle(editor) {
     const clipboardText = await navigator.clipboard.readText();
     if (!clipboardText.startsWith("http://") && !clipboardText.startsWith("https://")) {
-      new import_obsidian4.Notice("Clipboard does not contain a valid URL");
+      new import_obsidian5.Notice("Clipboard does not contain a valid URL");
       return;
     }
     const connected = await this.api.isConnected();
     if (!connected) {
-      new import_obsidian4.Notice("Eagle is not running");
+      new import_obsidian5.Notice("Eagle is not running");
       return;
     }
     const name = `Captured from Obsidian - ${new Date().toISOString()}`;
@@ -2074,10 +2112,10 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       folderId: this.settings.defaultFolder || void 0
     });
     if (success) {
-      new import_obsidian4.Notice("URL captured to Eagle");
+      new import_obsidian5.Notice("URL captured to Eagle");
       editor.replaceSelection(`[Captured: ${clipboardText}]`);
     } else {
-      new import_obsidian4.Notice("Failed to capture URL to Eagle");
+      new import_obsidian5.Notice("Failed to capture URL to Eagle");
     }
   }
   async openEagleItemUnderCursor(editor) {
@@ -2085,7 +2123,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const line = editor.getLine(cursor.line);
     const match = line.match(/eagle:\/\/item\/([A-Z0-9]+)/i);
     if (!match) {
-      new import_obsidian4.Notice("No Eagle link found on current line");
+      new import_obsidian5.Notice("No Eagle link found on current line");
       return;
     }
     const url = `eagle://item/${match[1]}`;
@@ -2113,39 +2151,39 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
     if (!itemId && !directFilePath) {
-      new import_obsidian4.Notice("Clipboard does not contain a valid Eagle URL or file path.\nSupported: eagle://item/ID, localhost URL, or Eagle library path");
+      new import_obsidian5.Notice("Clipboard does not contain a valid Eagle URL or file path.\nSupported: eagle://item/ID, localhost URL, or Eagle library path");
       return;
     }
     const provider = this.getActiveCloudProvider();
     if (!provider) {
-      new import_obsidian4.Notice("No cloud provider configured. Check settings.");
+      new import_obsidian5.Notice("No cloud provider configured. Check settings.");
       return;
     }
     if (itemId) {
       const item = await this.api.getItemInfo(itemId);
       if (!item) {
-        new import_obsidian4.Notice("Could not fetch item info from Eagle");
+        new import_obsidian5.Notice("Could not fetch item info from Eagle");
         return;
       }
       if (hasR2Upload(item)) {
         const cloudUrl = this.api.getCloudUrl(item);
-        new import_obsidian4.Notice(`Already uploaded: ${cloudUrl}`);
+        new import_obsidian5.Notice(`Already uploaded: ${cloudUrl}`);
         if (cloudUrl) {
           await navigator.clipboard.writeText(cloudUrl);
         }
         return;
       }
-      new import_obsidian4.Notice(`Uploading ${item.name} to cloud...`);
+      new import_obsidian5.Notice(`Uploading ${item.name} to cloud...`);
       const filePath = await this.api.getOriginalFilePath(item);
       if (!filePath) {
-        new import_obsidian4.Notice("Could not get file path from Eagle");
+        new import_obsidian5.Notice("Could not get file path from Eagle");
         return;
       }
       const filename = `${item.name}.${item.ext}`;
       const mimeType = getMimeType2(item.ext);
       const result = await provider.upload(filePath, filename, mimeType);
       if (result.success && result.publicUrl) {
-        new import_obsidian4.Notice(`Uploaded! Cloud URL copied to clipboard`);
+        new import_obsidian5.Notice(`Uploaded! Cloud URL copied to clipboard`);
         await navigator.clipboard.writeText(result.publicUrl);
         const markdown = `![${filename}](${result.publicUrl})`;
         editor.replaceSelection(markdown);
@@ -2159,21 +2197,21 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         }
         await this.api.updateItem(item.id, { tags: newTags });
       } else {
-        new import_obsidian4.Notice(`Upload failed: ${result.error}`);
+        new import_obsidian5.Notice(`Upload failed: ${result.error}`);
       }
     } else if (directFilePath) {
       const filename = directFilePath.split("/").pop() || "image";
       const ext = getExtFromFilename(filename);
       const mimeType = getMimeType2(ext);
-      new import_obsidian4.Notice(`Uploading ${filename} to cloud...`);
+      new import_obsidian5.Notice(`Uploading ${filename} to cloud...`);
       const result = await provider.upload(directFilePath, filename, mimeType);
       if (result.success && result.publicUrl) {
-        new import_obsidian4.Notice(`Uploaded! Cloud URL copied to clipboard`);
+        new import_obsidian5.Notice(`Uploaded! Cloud URL copied to clipboard`);
         await navigator.clipboard.writeText(result.publicUrl);
         const markdown = `![${filename}](${result.publicUrl})`;
         editor.replaceSelection(markdown);
       } else {
-        new import_obsidian4.Notice(`Upload failed: ${result.error}`);
+        new import_obsidian5.Notice(`Upload failed: ${result.error}`);
       }
     }
   }
@@ -2199,34 +2237,34 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
     if (!itemId && !directFilePath) {
-      new import_obsidian4.Notice("Clipboard does not contain a valid Eagle URL or file path");
+      new import_obsidian5.Notice("Clipboard does not contain a valid Eagle URL or file path");
       return;
     }
     const provider = this.getActiveCloudProvider();
     if (!provider) {
-      new import_obsidian4.Notice("No cloud provider configured. Check settings.");
+      new import_obsidian5.Notice("No cloud provider configured. Check settings.");
       return;
     }
     const providerName = this.getActiveCloudProviderName();
     if (itemId) {
       const item = await this.api.getItemInfo(itemId);
       if (!item) {
-        new import_obsidian4.Notice("Could not fetch item info from Eagle");
+        new import_obsidian5.Notice("Could not fetch item info from Eagle");
         return;
       }
       const filePath = await this.api.getOriginalFilePath(item);
       if (!filePath) {
-        new import_obsidian4.Notice("Could not get file path from Eagle");
+        new import_obsidian5.Notice("Could not get file path from Eagle");
         return;
       }
-      new import_obsidian4.Notice(`Uploading ${item.name} to ${providerName}...`);
+      new import_obsidian5.Notice(`Uploading ${item.name} to ${providerName}...`);
       const filename = `${item.name}.${item.ext}`;
       const mimeType = getMimeType2(item.ext);
       const result = await provider.upload(filePath, filename, mimeType);
       if (result.success && result.publicUrl) {
         const markdown = `![${filename}](${result.publicUrl})`;
         editor.replaceSelection(markdown);
-        new import_obsidian4.Notice(`Embedded and uploaded to ${providerName}!`);
+        new import_obsidian5.Notice(`Embedded and uploaded to ${providerName}!`);
         if (result.key) {
           const cloudTag = `cloud:${result.key}`;
           const newTags = [...item.tags];
@@ -2239,20 +2277,20 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
           await this.api.updateItem(item.id, { tags: newTags });
         }
       } else {
-        new import_obsidian4.Notice(`Upload failed: ${result.error}`);
+        new import_obsidian5.Notice(`Upload failed: ${result.error}`);
       }
     } else if (directFilePath) {
       const filename = directFilePath.split("/").pop() || "image";
       const ext = getExtFromFilename(filename);
       const mimeType = getMimeType2(ext);
-      new import_obsidian4.Notice(`Uploading ${filename} to ${providerName}...`);
+      new import_obsidian5.Notice(`Uploading ${filename} to ${providerName}...`);
       const result = await provider.upload(directFilePath, filename, mimeType);
       if (result.success && result.publicUrl) {
         const markdown = `![${filename}](${result.publicUrl})`;
         editor.replaceSelection(markdown);
-        new import_obsidian4.Notice(`Embedded and uploaded to ${providerName}!`);
+        new import_obsidian5.Notice(`Embedded and uploaded to ${providerName}!`);
       } else {
-        new import_obsidian4.Notice(`Upload failed: ${result.error}`);
+        new import_obsidian5.Notice(`Upload failed: ${result.error}`);
       }
     }
   }
@@ -2531,7 +2569,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     var _a, _b, _c;
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     try {
@@ -2563,10 +2601,10 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       await this.app.vault.createBinary(targetPath, buffer);
       const markdownImage = `![${file.name}](${encodeURI(targetPath)})`;
       editor.replaceSelection(markdownImage);
-      new import_obsidian4.Notice(`Saved locally: ${file.name}`);
+      new import_obsidian5.Notice(`Saved locally: ${file.name}`);
     } catch (error) {
       console.error("Failed to save image locally:", error);
-      new import_obsidian4.Notice(`Failed to save: ${file.name}`);
+      new import_obsidian5.Notice(`Failed to save: ${file.name}`);
     }
   }
   async uploadFileWithProgress(file, editor) {
@@ -2577,19 +2615,19 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       const imageUrl = await this.uploadImageToEagle(file);
       const markdownImage = `![${file.name}](${imageUrl})`;
       this.replaceTextInDocument(editor, placeholderText, markdownImage);
-      new import_obsidian4.Notice(`Uploaded to Eagle: ${file.name}`);
+      new import_obsidian5.Notice(`Uploaded to Eagle: ${file.name}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       const errorText = `<!-- Failed to upload ${file.name}: ${errorMessage} -->`;
       this.replaceTextInDocument(editor, placeholderText, errorText);
       console.error("Failed to upload image:", error);
-      new import_obsidian4.Notice(`Failed to upload: ${file.name}`);
+      new import_obsidian5.Notice(`Failed to upload: ${file.name}`);
     }
   }
   async uploadToCloudWithProgress(file, editor) {
     const provider = this.getActiveCloudProvider();
     if (!provider) {
-      new import_obsidian4.Notice("No cloud provider configured");
+      new import_obsidian5.Notice("No cloud provider configured");
       return;
     }
     const pasteId = this.generatePasteId();
@@ -2604,7 +2642,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       if (result.success && result.publicUrl) {
         const markdownImage = `![${file.name}](${result.publicUrl})`;
         this.replaceTextInDocument(editor, placeholderText, markdownImage);
-        new import_obsidian4.Notice(`Uploaded to ${providerName}: ${file.name}`);
+        new import_obsidian5.Notice(`Uploaded to ${providerName}: ${file.name}`);
       } else {
         throw new Error(result.error || "Upload failed");
       }
@@ -2613,7 +2651,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       const errorText = `<!-- Failed to upload ${file.name}: ${errorMessage} -->`;
       this.replaceTextInDocument(editor, placeholderText, errorText);
       console.error("Failed to upload to cloud:", error);
-      new import_obsidian4.Notice(`Failed to upload: ${file.name}`);
+      new import_obsidian5.Notice(`Failed to upload: ${file.name}`);
     }
   }
   getActiveCloudProvider() {
@@ -2672,7 +2710,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       if (cursor.ch >= start && cursor.ch <= end) {
         const filename = match[1];
         const file = this.app.metadataCache.getFirstLinkpathDest(filename, "");
-        if (file instanceof import_obsidian4.TFile) {
+        if (file instanceof import_obsidian5.TFile) {
           return {
             file,
             startPos: { line: cursor.line, ch: start },
@@ -2690,7 +2728,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         const filepath = match[2];
         if (!filepath.startsWith("http") && !filepath.startsWith("file://") && !filepath.startsWith("eagle://")) {
           const file = this.app.metadataCache.getFirstLinkpathDest(filepath, "");
-          if (file instanceof import_obsidian4.TFile) {
+          if (file instanceof import_obsidian5.TFile) {
             return {
               file,
               startPos: { line: cursor.line, ch: start },
@@ -2727,12 +2765,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       const imageUrl = thumbnailPath ? `file://${thumbnailPath}` : `eagle://item/${result.itemId}`;
       const markdownImage = `![${file.basename}](${imageUrl})`;
       this.replaceTextInDocument(editor, placeholderText, markdownImage);
-      new import_obsidian4.Notice(`Uploaded to Eagle: ${file.name}`);
+      new import_obsidian5.Notice(`Uploaded to Eagle: ${file.name}`);
       await this.offerToReplaceOtherReferences(file, imageUrl, { line: startPos.line, ch: startPos.ch });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       this.replaceTextInDocument(editor, placeholderText, originalText);
-      new import_obsidian4.Notice(`Failed to upload: ${errorMessage}`);
+      new import_obsidian5.Notice(`Failed to upload: ${errorMessage}`);
     }
   }
   async offerToReplaceOtherReferences(originalFile, newUrl, excludePosition) {
@@ -2758,7 +2796,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (!shouldReplace)
       return;
     await this.replaceAllReferences(filteredRefs, originalFile, newUrl);
-    new import_obsidian4.Notice(`Replaced ${totalCount} references in ${fileCount} files`);
+    new import_obsidian5.Notice(`Replaced ${totalCount} references in ${fileCount} files`);
   }
   findAllReferencesToFile(targetFile) {
     const results = [];
@@ -2786,7 +2824,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   }
   async confirmReplaceReferences(count, fileCount, filename) {
     return new Promise((resolve) => {
-      const notice = new import_obsidian4.Notice(
+      const notice = new import_obsidian5.Notice(
         `Found ${count} other references to "${filename}" in ${fileCount} files. Click to replace all with Eagle link.`,
         1e4
       );
@@ -2802,7 +2840,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   async replaceAllReferences(references, originalFile, newUrl) {
     for (const ref of references) {
       const file = this.app.vault.getAbstractFileByPath(ref.notePath);
-      if (!(file instanceof import_obsidian4.TFile))
+      if (!(file instanceof import_obsidian5.TFile))
         continue;
       let content = await this.app.vault.read(file);
       const sortedPositions = [...ref.positions].sort((a, b) => {
@@ -2828,12 +2866,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   async handleEagleLocalhostUrlPaste(url, editor) {
     const itemId = parseEagleLocalhostUrl(url);
     if (!itemId) {
-      new import_obsidian4.Notice("Invalid Eagle URL");
+      new import_obsidian5.Notice("Invalid Eagle URL");
       return;
     }
     const item = await this.api.getItemInfo(itemId);
     if (!item) {
-      new import_obsidian4.Notice("Could not fetch item info from Eagle");
+      new import_obsidian5.Notice("Could not fetch item info from Eagle");
       return;
     }
     const filePath = await this.getEagleItemFilePath(itemId, item.name, item.ext);
@@ -2842,9 +2880,9 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       const filename = `${item.name}.${item.ext}`;
       const markdown = `![${filename}](${fileUrl})`;
       editor.replaceSelection(markdown);
-      new import_obsidian4.Notice(`Embedded: ${filename}`);
+      new import_obsidian5.Notice(`Embedded: ${filename}`);
     } else {
-      new import_obsidian4.Notice("Could not get file path from Eagle");
+      new import_obsidian5.Notice("Could not get file path from Eagle");
     }
   }
   isEagleLibraryPath(text) {
@@ -2864,14 +2902,14 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         const originalPath = `${folderPath}/${item.name}.${item.ext}`;
         const filename2 = `${item.name}.${item.ext}`;
         editor.replaceSelection(`![${filename2}](${this.pathToFileUrl(originalPath)})`);
-        new import_obsidian4.Notice(`Embedded: ${filename2}`);
+        new import_obsidian5.Notice(`Embedded: ${filename2}`);
         return;
       }
     }
     const fallbackPath = normalizedPath.replace(/_thumbnail(\.[A-Za-z0-9]+)$/, "$1");
     const filename = fallbackPath.split("/").pop() || "image";
     editor.replaceSelection(`![${filename}](${this.pathToFileUrl(fallbackPath)})`);
-    new import_obsidian4.Notice(`Embedded: ${filename}`);
+    new import_obsidian5.Notice(`Embedded: ${filename}`);
   }
   async getEagleItemFilePath(itemId, name, ext) {
     const thumbnailPath = await this.api.getThumbnailPath(itemId);
@@ -2881,6 +2919,138 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const folderPath = decodedPath.substring(0, decodedPath.lastIndexOf("/"));
     const originalFileName = `${name}.${ext}`;
     return `${folderPath}/${originalFileName}`;
+  }
+  // ── Excalidraw integration ──────────────────────────────────────────────
+  // Obsidian's editor-paste/editor-drop events only fire in the Markdown editor,
+  // not in an Excalidraw canvas. And the Excalidraw plugin's onPasteHook receives
+  // an already-consumed clipboard (no image bytes). So we attach capture-phase
+  // paste/drop listeners on each Excalidraw view container: this intercepts BEFORE
+  // Excalidraw, handles Eagle references (embed the ORIGINAL) and pasted image
+  // files (upload to the cloud provider), and suppresses Excalidraw's default
+  // handling — embedding a portable cloud URL instead of a vault attachment.
+  registerExcalidrawIntegration() {
+    this.app.workspace.onLayoutReady(() => {
+      this.scanAndAttachExcalidrawContainers();
+      this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+        this.scanAndAttachExcalidrawContainers();
+      }));
+      this.registerEvent(this.app.workspace.on("layout-change", () => {
+        this.scanAndAttachExcalidrawContainers();
+      }));
+    });
+  }
+  // Public so the settings toggle can attach to already-open canvases immediately.
+  scanAndAttachExcalidrawContainers() {
+    if (!this.settings.excalidrawIntegration)
+      return;
+    for (const leaf of this.app.workspace.getLeavesOfType("excalidraw")) {
+      const view = leaf.view;
+      const el = view == null ? void 0 : view.containerEl;
+      if (!el || this.attachedExcalidrawContainers.has(el) || typeof view.addImageWithURL !== "function")
+        continue;
+      this.attachedExcalidrawContainers.add(el);
+      this.registerDomEvent(el, "paste", (evt) => this.onExcalidrawPasteOrDrop(evt, view), { capture: true });
+      this.registerDomEvent(el, "drop", (evt) => this.onExcalidrawPasteOrDrop(evt, view), { capture: true });
+    }
+  }
+  onExcalidrawPasteOrDrop(evt, view) {
+    if (!this.settings.excalidrawIntegration)
+      return;
+    const dt = evt instanceof ClipboardEvent ? evt.clipboardData : evt.dataTransfer;
+    if (!dt)
+      return;
+    const text = (dt.getData("text/plain") || "").trim();
+    if (this.isEagleReference(text)) {
+      evt.preventDefault();
+      evt.stopImmediatePropagation();
+      void this.addEagleRefToCanvas(view, text);
+      return;
+    }
+    const images = Array.from(dt.files).filter((f) => f.type.startsWith("image/"));
+    if (images.length > 0) {
+      evt.preventDefault();
+      evt.stopImmediatePropagation();
+      void this.addImageFilesToCanvas(view, images);
+      return;
+    }
+  }
+  isEagleReference(text) {
+    return !!text && (isEagleLocalhostUrl(text) || this.isEagleLibraryPath(text));
+  }
+  async resolveEagleItemFromReference(text) {
+    if (isEagleLocalhostUrl(text)) {
+      const id = parseEagleLocalhostUrl(text);
+      return id ? this.api.getItemInfo(id) : null;
+    }
+    const idMatch = text.replace(/\\/g, "/").match(/\/([A-Za-z0-9]+)\.info\//);
+    return idMatch ? this.api.getItemInfo(idMatch[1]) : null;
+  }
+  async getEaglePublicUrl(item) {
+    const existing = this.api.getCloudUrl(item);
+    if (existing)
+      return existing;
+    const provider = this.getActiveCloudProvider();
+    if (!provider) {
+      new import_obsidian5.Notice("No cloud provider configured for Excalidraw embed");
+      return null;
+    }
+    const originalPath = await this.api.getOriginalFilePath(item);
+    if (!originalPath)
+      return null;
+    const result = await provider.upload(originalPath, `${item.name}.${item.ext}`, getMimeType2(item.ext));
+    return result.success && result.publicUrl ? result.publicUrl : null;
+  }
+  async addEagleRefToCanvas(view, text) {
+    try {
+      const item = await this.resolveEagleItemFromReference(text);
+      if (!item) {
+        new import_obsidian5.Notice("Could not fetch item info from Eagle");
+        return;
+      }
+      const url = await this.getEaglePublicUrl(item);
+      if (!url) {
+        new import_obsidian5.Notice(`Could not get a cloud URL for ${item.name}`);
+        return;
+      }
+      await view.addImageWithURL(url);
+      new import_obsidian5.Notice(`Added to canvas: ${item.name}.${item.ext}`);
+    } catch (error) {
+      console.error("[CMDS Eagle] Excalidraw Eagle-ref embed failed:", error);
+      new import_obsidian5.Notice("Failed to add Eagle image to Excalidraw canvas");
+    }
+  }
+  async addImageFilesToCanvas(view, files) {
+    const provider = this.getActiveCloudProvider();
+    if (!provider) {
+      new import_obsidian5.Notice("No cloud provider configured for Excalidraw embed");
+      return;
+    }
+    const providerName = this.getActiveCloudProviderName();
+    for (const file of files) {
+      try {
+        const tempPath = await this.saveToTempLocation(file);
+        let eagleNote = "";
+        if (this.settings.excalidrawImportToEagle) {
+          const added = await this.api.addFromPath({
+            path: tempPath,
+            name: file.name.replace(/\.[^.]+$/, ""),
+            folderId: this.settings.defaultFolder || void 0
+          });
+          if (added.success)
+            eagleNote = " + Eagle";
+        }
+        const result = await provider.upload(tempPath, file.name, getMimeType2(getExtFromFilename(file.name)));
+        if (result.success && result.publicUrl) {
+          await view.addImageWithURL(result.publicUrl);
+          new import_obsidian5.Notice(`Uploaded to ${providerName}${eagleNote} & added to canvas: ${file.name}`);
+        } else {
+          new import_obsidian5.Notice(`Failed to upload ${file.name}`);
+        }
+      } catch (error) {
+        console.error("[CMDS Eagle] Excalidraw image upload failed:", error);
+        new import_obsidian5.Notice(`Failed to add image to Excalidraw canvas: ${file.name}`);
+      }
+    }
   }
   safeDecodeUri(str) {
     try {
@@ -3063,12 +3233,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   }
   async convertCrossPlatformPaths() {
     if (!this.settings.enableCrossPlatform) {
-      new import_obsidian4.Notice("Cross-platform sync is disabled in settings");
+      new import_obsidian5.Notice("Cross-platform sync is disabled in settings");
       return;
     }
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     const content = await this.app.vault.read(activeFile);
@@ -3091,9 +3261,9 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     if (convertedCount > 0) {
       await this.app.vault.modify(activeFile, newContent);
-      new import_obsidian4.Notice(`Converted ${convertedCount} cross-platform image paths`);
+      new import_obsidian5.Notice(`Converted ${convertedCount} cross-platform image paths`);
     } else {
-      new import_obsidian4.Notice("No cross-platform paths found to convert");
+      new import_obsidian5.Notice("No cross-platform paths found to convert");
     }
   }
   async autoConvertOnFileOpen(file) {
@@ -3117,17 +3287,17 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     if (convertedCount > 0) {
       await this.app.vault.modify(file, newContent);
-      new import_obsidian4.Notice(`Auto-converted ${convertedCount} cross-platform paths`);
+      new import_obsidian5.Notice(`Auto-converted ${convertedCount} cross-platform paths`);
     }
   }
   async convertCrossPlatformRenderOnly() {
     if (!this.settings.enableCrossPlatform) {
-      new import_obsidian4.Notice("Cross-platform sync is disabled in settings");
+      new import_obsidian5.Notice("Cross-platform sync is disabled in settings");
       return;
     }
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
     if (!view) {
-      new import_obsidian4.Notice("No active markdown view");
+      new import_obsidian5.Notice("No active markdown view");
       return;
     }
     const allContainers = [
@@ -3186,13 +3356,13 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       });
     }
     if (convertedCount > 0) {
-      new import_obsidian4.Notice(`Render-only: converted ${convertedCount} image paths (source unchanged)`);
+      new import_obsidian5.Notice(`Render-only: converted ${convertedCount} image paths (source unchanged)`);
     } else {
-      new import_obsidian4.Notice("No cross-platform paths found to convert");
+      new import_obsidian5.Notice("No cross-platform paths found to convert");
     }
   }
   async autoConvertRenderOnlyOnFileOpen() {
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
     if (!view)
       return;
     const contentEl = view.contentEl;
@@ -3236,12 +3406,12 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
   async uploadAllImagesToCloud() {
     const provider = this.getActiveCloudProvider();
     if (!provider) {
-      new import_obsidian4.Notice("No cloud provider configured. Check settings.");
+      new import_obsidian5.Notice("No cloud provider configured. Check settings.");
       return;
     }
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian4.Notice("No active file");
+      new import_obsidian5.Notice("No active file");
       return;
     }
     const content = await this.app.vault.read(activeFile);
@@ -3287,10 +3457,10 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       });
     }
     if (imageMatches.length === 0) {
-      new import_obsidian4.Notice("No local images found in current note");
+      new import_obsidian5.Notice("No local images found in current note");
       return;
     }
-    new import_obsidian4.Notice(`Found ${imageMatches.length} images. Uploading to ${providerName}...`);
+    new import_obsidian5.Notice(`Found ${imageMatches.length} images. Uploading to ${providerName}...`);
     let uploaded = 0;
     let newContent = content;
     for (const img of imageMatches) {
@@ -3316,6 +3486,6 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     if (newContent !== content) {
       await this.app.vault.modify(activeFile, newContent);
     }
-    new import_obsidian4.Notice(`Uploaded ${uploaded}/${imageMatches.length} images to ${providerName}`);
+    new import_obsidian5.Notice(`Uploaded ${uploaded}/${imageMatches.length} images to ${providerName}`);
   }
 };

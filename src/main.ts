@@ -27,10 +27,18 @@ import { EagleSearchModal, ImagePasteChoiceModal } from './modals';
 import { CMDSPACEEagleSettingTab } from './settings';
 import { createCloudProvider, getMimeType, getExtFromFilename, CloudProvider } from './cloud-providers';
 
+// Minimal shape of the Excalidraw plugin's view that we drive.
+// (The Excalidraw plugin is an optional peer, so we don't import its types.)
+interface ExcalidrawViewLike {
+	containerEl: HTMLElement;
+	addImageWithURL(url: string): Promise<unknown>;
+}
+
 export default class CMDSPACELinkEagle extends Plugin {
 	settings: CMDSPACEEagleSettings;
 	api: EagleApiService;
 	private lastModifiedFile: string | null = null;
+	private attachedExcalidrawContainers = new WeakSet<HTMLElement>();
 
 	async onload(): Promise<void> {
 		console.log('[CMDS Eagle] Loading plugin v1.6.0');
@@ -158,6 +166,8 @@ export default class CMDSPACELinkEagle extends Plugin {
 		this.addRibbonIcon('image', 'CMDSPACE: Eagle', () => {
 			new EagleSearchModal(this.app, this.api, this.settings).open();
 		});
+
+		this.registerExcalidrawIntegration();
 	}
 
 	onunload(): void {
@@ -165,7 +175,8 @@ export default class CMDSPACELinkEagle extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const saved = (await this.loadData()) as Partial<CMDSPACEEagleSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 	}
 
 	async saveSettings(): Promise<void> {
@@ -1378,6 +1389,151 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		const folderPath = decodedPath.substring(0, decodedPath.lastIndexOf('/'));
 		const originalFileName = `${name}.${ext}`;
 		return `${folderPath}/${originalFileName}`;
+	}
+
+	// ── Excalidraw integration ──────────────────────────────────────────────
+	// Obsidian's editor-paste/editor-drop events only fire in the Markdown editor,
+	// not in an Excalidraw canvas. And the Excalidraw plugin's onPasteHook receives
+	// an already-consumed clipboard (no image bytes). So we attach capture-phase
+	// paste/drop listeners on each Excalidraw view container: this intercepts BEFORE
+	// Excalidraw, handles Eagle references (embed the ORIGINAL) and pasted image
+	// files (upload to the cloud provider), and suppresses Excalidraw's default
+	// handling — embedding a portable cloud URL instead of a vault attachment.
+
+	private registerExcalidrawIntegration(): void {
+		this.app.workspace.onLayoutReady(() => {
+			this.scanAndAttachExcalidrawContainers();
+			// Attach to canvases as they are opened / the layout changes.
+			this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+				this.scanAndAttachExcalidrawContainers();
+			}));
+			this.registerEvent(this.app.workspace.on('layout-change', () => {
+				this.scanAndAttachExcalidrawContainers();
+			}));
+		});
+	}
+
+	// Public so the settings toggle can attach to already-open canvases immediately.
+	scanAndAttachExcalidrawContainers(): void {
+		if (!this.settings.excalidrawIntegration) return;
+		for (const leaf of this.app.workspace.getLeavesOfType('excalidraw')) {
+			const view = leaf.view as unknown as ExcalidrawViewLike;
+			const el = view?.containerEl;
+			// Feature-detect the view API so an Excalidraw version drift fails soft.
+			if (!el || this.attachedExcalidrawContainers.has(el) || typeof view.addImageWithURL !== 'function') continue;
+			this.attachedExcalidrawContainers.add(el);
+			this.registerDomEvent(el, 'paste', (evt) => this.onExcalidrawPasteOrDrop(evt, view), { capture: true });
+			this.registerDomEvent(el, 'drop', (evt) => this.onExcalidrawPasteOrDrop(evt, view), { capture: true });
+		}
+	}
+
+	private onExcalidrawPasteOrDrop(evt: ClipboardEvent | DragEvent, view: ExcalidrawViewLike): void {
+		if (!this.settings.excalidrawIntegration) return;
+		const dt = evt instanceof ClipboardEvent ? evt.clipboardData : evt.dataTransfer;
+		if (!dt) return;
+
+		const text = (dt.getData('text/plain') || '').trim();
+		if (this.isEagleReference(text)) {
+			evt.preventDefault();
+			evt.stopImmediatePropagation();
+			void this.addEagleRefToCanvas(view, text);
+			return;
+		}
+
+		const images = Array.from(dt.files).filter((f) => f.type.startsWith('image/'));
+		if (images.length > 0) {
+			evt.preventDefault();
+			evt.stopImmediatePropagation();
+			void this.addImageFilesToCanvas(view, images);
+			return;
+		}
+		// Neither an Eagle reference nor an image — let Excalidraw handle it natively.
+	}
+
+	private isEagleReference(text: string): boolean {
+		return !!text && (isEagleLocalhostUrl(text) || this.isEagleLibraryPath(text));
+	}
+
+	private async resolveEagleItemFromReference(text: string): Promise<EagleItem | null> {
+		if (isEagleLocalhostUrl(text)) {
+			const id = parseEagleLocalhostUrl(text);
+			return id ? this.api.getItemInfo(id) : null;
+		}
+		const idMatch = text.replace(/\\/g, '/').match(/\/([A-Za-z0-9]+)\.info\//);
+		return idMatch ? this.api.getItemInfo(idMatch[1]) : null;
+	}
+
+	private async getEaglePublicUrl(item: EagleItem): Promise<string | null> {
+		// Reuse an existing cloud (R2) upload if the item already has one.
+		const existing = this.api.getCloudUrl(item);
+		if (existing) return existing;
+
+		const provider = this.getActiveCloudProvider();
+		if (!provider) {
+			new Notice('No cloud provider configured for Excalidraw embed');
+			return null;
+		}
+		const originalPath = await this.api.getOriginalFilePath(item);
+		if (!originalPath) return null;
+
+		const result = await provider.upload(originalPath, `${item.name}.${item.ext}`, getMimeType(item.ext));
+		return result.success && result.publicUrl ? result.publicUrl : null;
+	}
+
+	private async addEagleRefToCanvas(view: ExcalidrawViewLike, text: string): Promise<void> {
+		try {
+			const item = await this.resolveEagleItemFromReference(text);
+			if (!item) {
+				new Notice('Could not fetch item info from Eagle');
+				return;
+			}
+			const url = await this.getEaglePublicUrl(item);
+			if (!url) {
+				new Notice(`Could not get a cloud URL for ${item.name}`);
+				return;
+			}
+			await view.addImageWithURL(url);
+			new Notice(`Added to canvas: ${item.name}.${item.ext}`);
+		} catch (error) {
+			console.error('[CMDS Eagle] Excalidraw Eagle-ref embed failed:', error);
+			new Notice('Failed to add Eagle image to Excalidraw canvas');
+		}
+	}
+
+	private async addImageFilesToCanvas(view: ExcalidrawViewLike, files: File[]): Promise<void> {
+		const provider = this.getActiveCloudProvider();
+		if (!provider) {
+			new Notice('No cloud provider configured for Excalidraw embed');
+			return;
+		}
+		const providerName = this.getActiveCloudProviderName();
+		for (const file of files) {
+			try {
+				const tempPath = await this.saveToTempLocation(file);
+
+				// Optionally catalogue the pasted screenshot in the Eagle library.
+				let eagleNote = '';
+				if (this.settings.excalidrawImportToEagle) {
+					const added = await this.api.addFromPath({
+						path: tempPath,
+						name: file.name.replace(/\.[^.]+$/, ''),
+						folderId: this.settings.defaultFolder || undefined,
+					});
+					if (added.success) eagleNote = ' + Eagle';
+				}
+
+				const result = await provider.upload(tempPath, file.name, getMimeType(getExtFromFilename(file.name)));
+				if (result.success && result.publicUrl) {
+					await view.addImageWithURL(result.publicUrl);
+					new Notice(`Uploaded to ${providerName}${eagleNote} & added to canvas: ${file.name}`);
+				} else {
+					new Notice(`Failed to upload ${file.name}`);
+				}
+			} catch (error) {
+				console.error('[CMDS Eagle] Excalidraw image upload failed:', error);
+				new Notice(`Failed to add image to Excalidraw canvas: ${file.name}`);
+			}
+		}
 	}
 
 	private safeDecodeUri(str: string): string {

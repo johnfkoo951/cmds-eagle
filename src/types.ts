@@ -190,6 +190,8 @@ export interface CMDSPACEEagleSettings {
 	embedImageInCard: boolean;
 	insertAsEmbed: boolean;
 	imagePasteBehavior: ImagePasteBehavior;
+	excalidrawIntegration: boolean;
+	excalidrawImportToEagle: boolean;
 	activeCloudProvider: CloudProviderType;
 	searchScope: SearchScope[];
 	searchFileTypes: string[];
@@ -224,6 +226,8 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	embedImageInCard: true,
 	insertAsEmbed: true,
 	imagePasteBehavior: 'ask',
+	excalidrawIntegration: true,
+	excalidrawImportToEagle: true,
 	activeCloudProvider: 'imghippo',
 	searchScope: ['name', 'tags'],
 	searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],

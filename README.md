@@ -11,6 +11,7 @@ Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your v
 - **Paste/Drop Integration**: Automatically handle pasted or dropped images
 - **Batch Convert**: Convert all local images in a note to cloud URLs
 - **Cross-Platform Sync**: Automatically convert image paths between Mac and Windows
+- **Excalidraw Integration**: Paste or drop images onto an Excalidraw canvas — Eagle assets embed the original, and clipboard screenshots are uploaded to your cloud provider (and optionally added to your Eagle library) instead of bloating the vault with attachments
 
 ## Installation
 
@@ -74,6 +75,16 @@ Use the same Eagle library across Mac and Windows with automatic path conversion
 
 **Manual conversion:**
 - Command: `Convert cross-platform image paths in current note`
+
+### Excalidraw
+
+Paste or drop images directly onto an Excalidraw canvas and let Eagle handle them:
+
+- **Eagle assets** (copied/dragged from Eagle) resolve to the **original** image (not the thumbnail).
+- **Clipboard screenshots** are uploaded to your active cloud provider and embedded by URL — and, when enabled, added to your Eagle library.
+- Images are embedded as portable cloud URLs, keeping the `.excalidraw` file small instead of storing vault attachments.
+
+Requires the [Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugin) plugin and a configured cloud provider. Toggle it under **Settings → Excalidraw integration**.
 
 ## Settings
 

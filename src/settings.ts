@@ -82,6 +82,31 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		new Setting(containerEl).setName('Excalidraw integration').setHeading();
+
+		new Setting(containerEl)
+			.setName('Embed images in Excalidraw via cloud')
+			.setDesc('When you paste or drop an image onto an Excalidraw canvas, upload it to your cloud provider and embed the URL instead of saving a vault attachment. Eagle assets are resolved to the original; screenshots are uploaded as-is. Requires the Excalidraw plugin and a configured cloud provider.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.excalidrawIntegration)
+				.onChange(async (value) => {
+					this.plugin.settings.excalidrawIntegration = value;
+					await this.plugin.saveSettings();
+					// Attach to any open canvases now; disabling takes effect immediately
+					// because the paste/drop handlers no-op when the setting is off.
+					if (value) this.plugin.scanAndAttachExcalidrawContainers();
+				}));
+
+		new Setting(containerEl)
+			.setName('Also add pasted screenshots to Eagle')
+			.setDesc('When pasting a clipboard image (not already in Eagle) onto a canvas, also import it into your Eagle library (into the default folder, if set).')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.excalidrawImportToEagle)
+				.onChange(async (value) => {
+					this.plugin.settings.excalidrawImportToEagle = value;
+					await this.plugin.saveSettings();
+				}));
+
 		new Setting(containerEl).setName('Search & embed').setHeading();
 
 		new Setting(containerEl)

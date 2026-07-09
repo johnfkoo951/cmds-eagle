@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import { promises as fs } from 'fs';
 import {
 	CloudUploadResult,
@@ -329,24 +330,35 @@ export class ImgHippoProvider implements CloudProvider {
 
 		try {
 			const fileBuffer = await fs.readFile(filePath);
-			const blob = new Blob([fileBuffer], { type: mimeType });
 
-			const formData = new FormData();
-			formData.append('api_key', this.config.apiKey);
-			formData.append('file', blob, filename);
-			formData.append('title', filename);
+			// Obsidian blocks cross-origin window.fetch (CORS), so use requestUrl with a
+			// manually-built multipart/form-data body (requestUrl bypasses CORS).
+			const boundary = `----CmdsEagleBoundary${Date.now().toString(16)}`;
+			const encoder = new TextEncoder();
+			const head = encoder.encode(
+				`--${boundary}\r\nContent-Disposition: form-data; name="api_key"\r\n\r\n${this.config.apiKey}\r\n` +
+				`--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${filename}\r\n` +
+				`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+			);
+			const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
+			const body = new Uint8Array(head.length + fileBuffer.length + tail.length);
+			body.set(head, 0);
+			body.set(fileBuffer, head.length);
+			body.set(tail, head.length + fileBuffer.length);
 
-			const response = await window.fetch(this.API_URL, {
+			const response = await requestUrl({
+				url: this.API_URL,
 				method: 'POST',
-				body: formData,
+				contentType: `multipart/form-data; boundary=${boundary}`,
+				body: body.buffer as ArrayBuffer,
+				throw: false,
 			});
 
-			if (!response.ok) {
-				const errorText = await response.text();
-				return { success: false, error: `ImgHippo upload failed (${response.status}): ${errorText}` };
+			if (response.status < 200 || response.status >= 300) {
+				return { success: false, error: `ImgHippo upload failed (${response.status}): ${(response.text || '').slice(0, 200)}` };
 			}
 
-			const result = await response.json() as {
+			const result = response.json as {
 				success: boolean;
 				status: number;
 				message?: string;
