@@ -1,5 +1,5 @@
 import { requestUrl } from 'obsidian';
-import { promises as fs } from 'fs';
+import { fsp } from './fs-utils';
 import {
 	CloudUploadResult,
 	R2ProviderConfig,
@@ -45,7 +45,7 @@ export class R2Provider implements CloudProvider {
 		}
 
 		try {
-			const fileBuffer = await fs.readFile(filePath);
+			const fileBuffer = await fsp.readFile(filePath);
 			const blob = new Blob([fileBuffer], { type: mimeType });
 
 			const formData = new FormData();
@@ -112,7 +112,7 @@ export class S3Provider implements CloudProvider {
 		}
 
 		try {
-			const fileBuffer = await fs.readFile(filePath);
+			const fileBuffer = await fsp.readFile(filePath);
 			const key = `eagle/${Date.now()}-${filename}`;
 			
 			const date = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
@@ -258,7 +258,7 @@ export class WebDAVProvider implements CloudProvider {
 		}
 
 		try {
-			const fileBuffer = await fs.readFile(filePath);
+			const fileBuffer = await fsp.readFile(filePath);
 			const key = `${this.config.uploadPath}/${Date.now()}-${filename}`;
 			const uploadUrl = `${this.config.serverUrl}${key}`;
 
@@ -329,7 +329,7 @@ export class ImgHippoProvider implements CloudProvider {
 		}
 
 		try {
-			const fileBuffer = await fs.readFile(filePath);
+			const fileBuffer = await fsp.readFile(filePath);
 
 			// Obsidian blocks cross-origin window.fetch (CORS), so use requestUrl with a
 			// manually-built multipart/form-data body (requestUrl bypasses CORS).
@@ -434,7 +434,7 @@ export class CustomProvider implements CloudProvider {
 		}
 
 		try {
-			const fileBuffer = await fs.readFile(filePath);
+			const fileBuffer = await fsp.readFile(filePath);
 			const blob = new Blob([fileBuffer], { type: mimeType });
 
 			const formData = new FormData();

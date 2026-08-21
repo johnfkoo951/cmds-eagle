@@ -381,7 +381,7 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	private detectCurrentUsername(): string {
 		const adapter = this.app.vault.adapter as { basePath?: string };
 		const vaultPath = adapter.basePath || '';
-		const platform = process.platform;
+		const platform = String(process.platform);
 
 		if (platform === 'darwin') {
 			const match = vaultPath.match(/^\/Users\/([^/]+)/);

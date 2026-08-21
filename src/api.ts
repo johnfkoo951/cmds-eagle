@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
-import { promises as fs } from 'fs';
+import { fsp } from './fs-utils';
 import {
 	EagleApiResponse,
 	EagleItem,
@@ -288,7 +288,7 @@ export class EagleApiService {
 
 			let fileBuffer: Buffer;
 			try {
-				fileBuffer = await fs.readFile(filePath);
+				fileBuffer = await fsp.readFile(filePath);
 			} catch {
 				return {
 					success: false, 

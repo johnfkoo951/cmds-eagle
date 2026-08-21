@@ -123,7 +123,12 @@ var DEFAULT_SETTINGS = {
 
 // src/api.ts
 var import_obsidian = require("obsidian");
+
+// src/fs-utils.ts
 var import_fs = require("fs");
+var fsp = import_fs.promises;
+
+// src/api.ts
 var EagleApiService = class {
   constructor(settings) {
     this.baseUrl = settings.eagleApiBaseUrl;
@@ -351,7 +356,7 @@ var EagleApiService = class {
       }
       let fileBuffer;
       try {
-        fileBuffer = await import_fs.promises.readFile(filePath);
+        fileBuffer = await fsp.readFile(filePath);
       } catch (e) {
         return {
           success: false,
@@ -798,7 +803,7 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
   detectCurrentUsername() {
     const adapter = this.app.vault.adapter;
     const vaultPath = adapter.basePath || "";
-    const platform = process.platform;
+    const platform = String(process.platform);
     if (platform === "darwin") {
       const match = vaultPath.match(/^\/Users\/([^/]+)/);
       if (match)
@@ -1351,7 +1356,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
   detectCurrentUsername() {
     const adapter = this.app.vault.adapter;
     const vaultPath = adapter.basePath || "";
-    const platform = process.platform;
+    const platform = String(process.platform);
     if (platform === "darwin") {
       const match = vaultPath.match(/^\/Users\/([^/]+)/);
       if (match)
@@ -1367,7 +1372,6 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
 
 // src/cloud-providers.ts
 var import_obsidian4 = require("obsidian");
-var import_fs2 = require("fs");
 function getMimeType2(ext) {
   const MIME_TYPES2 = {
     "jpg": "image/jpeg",
@@ -1396,7 +1400,7 @@ var R2Provider = class {
       return { success: false, error: "R2 not configured" };
     }
     try {
-      const fileBuffer = await import_fs2.promises.readFile(filePath);
+      const fileBuffer = await fsp.readFile(filePath);
       const blob = new Blob([fileBuffer], { type: mimeType });
       const formData = new FormData();
       formData.append("file", blob, filename);
@@ -1456,7 +1460,7 @@ var S3Provider = class {
       return { success: false, error: "S3 not configured" };
     }
     try {
-      const fileBuffer = await import_fs2.promises.readFile(filePath);
+      const fileBuffer = await fsp.readFile(filePath);
       const key = `eagle/${Date.now()}-${filename}`;
       const date = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
       const dateStamp = date.slice(0, 8);
@@ -1575,7 +1579,7 @@ var WebDAVProvider = class {
       return { success: false, error: "WebDAV not configured" };
     }
     try {
-      const fileBuffer = await import_fs2.promises.readFile(filePath);
+      const fileBuffer = await fsp.readFile(filePath);
       const key = `${this.config.uploadPath}/${Date.now()}-${filename}`;
       const uploadUrl = `${this.config.serverUrl}${key}`;
       const auth = btoa(`${this.config.username}:${this.config.password}`);
@@ -1639,7 +1643,7 @@ var ImgHippoProvider = class {
       return { success: false, error: "ImgHippo API key not configured" };
     }
     try {
-      const fileBuffer = await import_fs2.promises.readFile(filePath);
+      const fileBuffer = await fsp.readFile(filePath);
       const boundary = `----CmdsEagleBoundary${Date.now().toString(16)}`;
       const encoder = new TextEncoder();
       const head = encoder.encode(
@@ -1712,7 +1716,7 @@ var CustomProvider = class {
       return { success: false, error: "Custom provider not configured" };
     }
     try {
-      const fileBuffer = await import_fs2.promises.readFile(filePath);
+      const fileBuffer = await fsp.readFile(filePath);
       const blob = new Blob([fileBuffer], { type: mimeType });
       const formData = new FormData();
       formData.append("file", blob, filename);
