@@ -28,6 +28,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian5 = require("obsidian");
+var import_os2 = require("os");
 
 // src/types.ts
 var SUPPORTED_IMAGE_EXTENSIONS = [
@@ -64,7 +65,13 @@ var DEFAULT_SETTINGS = {
   imageDisplayMode: "cloud",
   embedImageInCard: true,
   insertAsEmbed: true,
-  imagePasteBehavior: "ask",
+  imagePasteBehavior: "eagle",
+  linkMode: "photo-info",
+  vaultThumbnailDir: "attachments/eagle",
+  deleteTempAfterImport: true,
+  thumbnailPollTimeoutMs: 1e4,
+  thumbnailMaxKB: 2048,
+  cardHiddenTagPrefixes: ["cli-eagle:", "r2:"],
   excalidrawIntegration: true,
   excalidrawImportToEagle: true,
   activeCloudProvider: "imghippo",
@@ -117,18 +124,446 @@ var DEFAULT_SETTINGS = {
   },
   enableCrossPlatform: false,
   autoConvertCrossPlatformPaths: false,
-  crossPlatformConversionMode: "modify-source",
+  // Rewriting the note itself makes two machines take turns editing the same
+  // line, which a synced vault sees as a conflict. Remap at render time instead.
+  crossPlatformConversionMode: "render-only",
   computers: []
 };
 
-// src/api.ts
-var import_obsidian = require("obsidian");
+// src/canonical.ts
+var CARD_SEPARATOR = " \xB7 ";
+var OPEN_IN_EAGLE_LABEL = "Eagle\uC5D0\uC11C \uC5F4\uAE30";
+var MODES_WITH_CARD = /* @__PURE__ */ new Set(["photo-info", "cmds-eagle"]);
+function modeNeedsThumbnail(mode) {
+  return mode === "photo-info" || mode === "photo-only";
+}
+function modeUsesOriginalFile(mode) {
+  return mode === "cmds-eagle" || mode === "cmds-eagle-photo-only" || mode === "cmds-eagle-photo-link";
+}
+function eagleDeeplink(itemId) {
+  return `eagle://item/${itemId}`;
+}
+function thumbnailVaultPath(assetsDir, itemId, ext) {
+  const dir = assetsDir.replace(/^\/+|\/+$/g, "");
+  return dir ? `${dir}/${itemId}.${ext}` : `${itemId}.${ext}`;
+}
+function toNoteRelativePath(notePath, targetVaultPath) {
+  const noteDir = notePath.split("/").slice(0, -1).filter(Boolean);
+  const target = targetVaultPath.split("/").filter(Boolean);
+  let shared = 0;
+  while (shared < noteDir.length && shared < target.length - 1 && noteDir[shared] === target[shared]) {
+    shared++;
+  }
+  const ascend = [];
+  for (let i = shared; i < noteDir.length; i++) {
+    ascend.push("..");
+  }
+  return ascend.concat(target.slice(shared)).join("/");
+}
+function formatFileSize(bytes) {
+  if (bytes < 1024)
+    return `${bytes} B`;
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+function encodeMarkdownPath(path) {
+  return path.replace(/%/g, "%25").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
+}
+function escapeMarkdownAltText(text) {
+  return text.replace(/([[\]])/g, "\\$1");
+}
+function filterMarkerTags(tags, hiddenPrefixes) {
+  return tags.filter((tag) => !hiddenPrefixes.some((prefix) => tag.startsWith(prefix)));
+}
+function buildMetadataCard(item, options) {
+  var _a;
+  const normalize = (_a = options.normalizeTag) != null ? _a : (tag) => tag;
+  const segments = [`\`${item.ext.toLowerCase()}\``, formatFileSize(item.size)];
+  if (item.width && item.height) {
+    segments.push(`${item.width}\xD7${item.height}`);
+  }
+  const tags = filterMarkerTags(item.tags, options.hiddenTagPrefixes).map((tag) => `#${normalize(tag)}`).join(" ");
+  if (tags) {
+    segments.push(tags);
+  }
+  segments.push(`[${OPEN_IN_EAGLE_LABEL}](${eagleDeeplink(item.id)})`);
+  return `> ${segments.join(CARD_SEPARATOR)}`;
+}
+function buildCanonicalEmbed(item, options) {
+  var _a;
+  const alt = escapeMarkdownAltText(item.name);
+  const deeplink = eagleDeeplink(item.id);
+  const linkOnly = `[${alt}](${deeplink})`;
+  let embed;
+  switch (options.mode) {
+    case "link-only":
+      embed = linkOnly;
+      break;
+    case "cmds-eagle":
+    case "cmds-eagle-photo-only":
+      embed = options.fileUrl ? `![${alt}](${options.fileUrl})` : linkOnly;
+      break;
+    case "cmds-eagle-photo-link":
+      embed = options.fileUrl ? `[![${alt}](${options.fileUrl})](${deeplink})` : linkOnly;
+      break;
+    default:
+      embed = options.thumbnailRelativePath ? `[![${alt}](${encodeMarkdownPath(options.thumbnailRelativePath)})](${deeplink})` : linkOnly;
+  }
+  const wantsCard = ((_a = options.includeCard) != null ? _a : true) && MODES_WITH_CARD.has(options.mode);
+  return wantsCard ? `${embed}
+${buildMetadataCard(item, options)}` : embed;
+}
 
 // src/fs-utils.ts
 var import_fs = require("fs");
 var fsp = import_fs.promises;
 
+// src/vault-assets.ts
+var POLL_INITIAL_DELAY_MS = 200;
+var POLL_BACKOFF_FACTOR = 2;
+var POLL_MAX_DELAY_MS = 1600;
+var BYTES_PER_KB = 1024;
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+async function readableFileSize(absolutePath) {
+  try {
+    const stats = await fsp.stat(absolutePath);
+    return stats.isFile() ? stats.size : null;
+  } catch (e) {
+    return null;
+  }
+}
+function stripThumbnailSuffix(absolutePath) {
+  return absolutePath.replace(/_thumbnail(\.[A-Za-z0-9]+)$/, "$1");
+}
+function safeDecodeUri(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
+function thumbnailCandidatePaths(reported) {
+  const decoded = safeDecodeUri(reported);
+  const bases = decoded === reported ? [reported] : [decoded, reported];
+  const candidates = [];
+  for (const base of bases) {
+    for (const candidate of [base, stripThumbnailSuffix(base)]) {
+      if (!candidates.includes(candidate)) {
+        candidates.push(candidate);
+      }
+    }
+  }
+  return candidates;
+}
+function extensionOf(absolutePath) {
+  const match = absolutePath.match(/\.([A-Za-z0-9]+)$/);
+  return match ? match[1].toLowerCase() : "png";
+}
+async function pollThumbnailPath(itemId, options) {
+  const deadline = Date.now() + options.timeoutMs;
+  let wait = POLL_INITIAL_DELAY_MS;
+  for (; ; ) {
+    const reported = await options.getThumbnailPath(itemId);
+    if (reported) {
+      for (const candidate of thumbnailCandidatePaths(reported)) {
+        if (await readableFileSize(candidate) !== null) {
+          return candidate;
+        }
+      }
+    }
+    if (Date.now() + wait >= deadline) {
+      return null;
+    }
+    await delay(wait);
+    wait = Math.min(wait * POLL_BACKOFF_FACTOR, POLL_MAX_DELAY_MS);
+  }
+}
+async function copyThumbnailToVault(vault, sourceAbsolutePath, request) {
+  const sourceSize = await readableFileSize(sourceAbsolutePath);
+  if (sourceSize === null) {
+    return null;
+  }
+  const ext = extensionOf(sourceAbsolutePath);
+  const vaultPath = thumbnailVaultPath(request.assetsDir, request.itemId, ext);
+  const sizeKB = Math.round(sourceSize / BYTES_PER_KB);
+  const oversized = sizeKB > request.maxKB;
+  const adapter = vault.adapter;
+  if (await adapter.exists(vaultPath)) {
+    return { vaultPath, copied: false, sizeKB, oversized };
+  }
+  await ensureVaultDir(vault, vaultPath);
+  let bytes;
+  try {
+    bytes = await fsp.readFile(sourceAbsolutePath);
+  } catch (error) {
+    console.error("[CMDS Eagle] Failed to read thumbnail source:", sourceAbsolutePath, error);
+    return null;
+  }
+  await adapter.writeBinary(vaultPath, toArrayBuffer(bytes));
+  return { vaultPath, copied: true, sizeKB, oversized };
+}
+async function ensureVaultDir(vault, vaultFilePath) {
+  const segments = vaultFilePath.split("/").slice(0, -1);
+  let current = "";
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    if (!await vault.adapter.exists(current)) {
+      await vault.adapter.mkdir(current);
+    }
+  }
+}
+function toArrayBuffer(buffer) {
+  const copy = new Uint8Array(buffer.length);
+  copy.set(buffer);
+  return copy.buffer;
+}
+
+// src/eagle-item-poll.ts
+var INITIAL_DELAY_MS = 100;
+var BACKOFF_FACTOR = 2;
+var MAX_DELAY_MS = 1e3;
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+async function pollWithBackoff(options) {
+  var _a, _b;
+  const now = (_a = options.now) != null ? _a : Date.now;
+  const wait = (_b = options.sleep) != null ? _b : sleep;
+  const deadline = now() + Math.max(0, options.timeoutMs);
+  let delayMs = INITIAL_DELAY_MS;
+  for (; ; ) {
+    const value = await options.read();
+    if (value)
+      return value;
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0)
+      return null;
+    await wait(Math.min(delayMs, remainingMs));
+    delayMs = Math.min(delayMs * BACKOFF_FACTOR, MAX_DELAY_MS);
+  }
+}
+function pollEagleItemInfo(itemId, options) {
+  return pollWithBackoff({
+    timeoutMs: options.timeoutMs,
+    read: () => options.getItemInfo(itemId),
+    now: options.now,
+    sleep: options.sleep
+  });
+}
+function pollEagleOriginalPath(options) {
+  return pollWithBackoff({
+    timeoutMs: options.timeoutMs,
+    read: async () => {
+      const path = await options.getOriginalFilePath();
+      return path && await options.isReady(path) ? path : null;
+    },
+    now: options.now,
+    sleep: options.sleep
+  });
+}
+
+// src/platform-paths.ts
+var FILE_SCHEME = "file://";
+var UNC_PREFIX = "//";
+function normalizePath(path) {
+  const slashed = path.replace(/\\/g, "/");
+  const isUnc = slashed.startsWith(UNC_PREFIX);
+  const collapsed = slashed.replace(/\/{2,}/g, "/");
+  const restored = isUnc ? `/${collapsed}` : collapsed;
+  return restored.length > 1 ? restored.replace(/\/+$/, "") : restored;
+}
+function comparable(path, platform) {
+  return platform === "win32" ? path.toLowerCase() : path;
+}
+function isAbsolutePath(path) {
+  const normalized = normalizePath(path.trim());
+  return normalized.startsWith("/") || /^[A-Za-z]:(\/|$)/.test(normalized);
+}
+function profileLibraryRoot(computer) {
+  var _a, _b;
+  const explicit = (_a = computer.eagleLibraryPath) == null ? void 0 : _a.trim();
+  if (explicit) {
+    return normalizePath(explicit);
+  }
+  if (!computer.username) {
+    return null;
+  }
+  const home = computer.platform === "darwin" ? `/Users/${computer.username}` : `C:/Users/${computer.username}`;
+  const sub = (_b = computer.subPath) == null ? void 0 : _b.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  return normalizePath(sub ? `${home}/${sub}` : home);
+}
+function matchLibraryRoot(path, computers) {
+  const normalized = normalizePath(path);
+  let best = null;
+  for (const computer of computers) {
+    const root = profileLibraryRoot(computer);
+    if (!root)
+      continue;
+    const relative = relativeToRoot(normalized, root, computer.platform);
+    if (relative === null)
+      continue;
+    if (!best || root.length > best.root.length) {
+      best = { computer, root, relative };
+    }
+  }
+  return best;
+}
+function relativeToRoot(path, root, platform) {
+  const candidate = comparable(path, platform);
+  const prefix = comparable(root, platform);
+  if (candidate === prefix)
+    return "";
+  if (candidate.startsWith(`${prefix}/`))
+    return path.slice(root.length + 1);
+  return null;
+}
+function joinRoot(root, relative) {
+  const base = normalizePath(root);
+  return relative ? `${base}/${normalizePath(relative)}` : base;
+}
+function findCurrentComputer(computers, platform, username = "") {
+  if (username) {
+    const sameIdentity = computers.filter(
+      (computer) => computer.platform === platform && computer.username === username
+    );
+    const flaggedIdentity = sameIdentity.find((computer) => computer.isCurrentComputer);
+    if (flaggedIdentity)
+      return flaggedIdentity;
+    if (sameIdentity.length === 1)
+      return sameIdentity[0];
+    if (sameIdentity.length > 1)
+      return null;
+  }
+  const samePlatform = computers.filter((computer) => computer.platform === platform);
+  const flaggedPlatform = samePlatform.find((computer) => computer.isCurrentComputer);
+  if (flaggedPlatform)
+    return flaggedPlatform;
+  return samePlatform.length === 1 ? samePlatform[0] : null;
+}
+function safeDecodeUri2(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
+function decodeSegments(path) {
+  return path.split("/").map(safeDecodeUri2).join("/");
+}
+function encodeSegments(segments) {
+  return segments.map((segment) => encodeURIComponent(segment)).join("/");
+}
+function pathToFileUrl(path) {
+  const normalized = normalizePath(path);
+  if (normalized.startsWith(UNC_PREFIX)) {
+    const [, , host, ...rest] = normalized.split("/");
+    const encodedHost = encodeURIComponent(host);
+    return rest.length ? `${FILE_SCHEME}${encodedHost}/${encodeSegments(rest)}` : `${FILE_SCHEME}${encodedHost}`;
+  }
+  if (/^[A-Za-z]:/.test(normalized)) {
+    const [drive, ...rest] = normalized.split("/");
+    return rest.length ? `${FILE_SCHEME}/${drive}/${encodeSegments(rest)}` : `${FILE_SCHEME}/${drive}`;
+  }
+  return `${FILE_SCHEME}${encodeSegments(normalized.split("/"))}`;
+}
+function pathToResourceUrl(path, resourcePathPrefix) {
+  const fileUrl = pathToFileUrl(path);
+  if (resourcePathPrefix.startsWith(FILE_SCHEME))
+    return fileUrl;
+  const prefix = resourcePathPrefix.endsWith("/") ? resourcePathPrefix : `${resourcePathPrefix}/`;
+  const resourcePath = fileUrl.startsWith("file:///") ? fileUrl.slice("file:///".length) : `//${fileUrl.slice(FILE_SCHEME.length)}`;
+  return `${prefix}${resourcePath}`;
+}
+function fileUrlToPath(url) {
+  if (!url.startsWith(FILE_SCHEME))
+    return null;
+  const rest = url.slice(FILE_SCHEME.length);
+  if (!rest)
+    return null;
+  if (rest.startsWith("/")) {
+    const decoded = decodeSegments(rest);
+    return /^\/[A-Za-z]:/.test(decoded) ? decoded.slice(1) : decoded;
+  }
+  return `${UNC_PREFIX}${decodeSegments(rest)}`;
+}
+function extractPathFromImageSrc(src) {
+  if (src.startsWith(FILE_SCHEME)) {
+    return fileUrlToPath(src);
+  }
+  const appMatch = src.match(/^app:\/\/[^/]+\/([^?#]+)/);
+  if (!appMatch)
+    return null;
+  const decoded = decodeSegments(appMatch[1]);
+  if (/^[A-Za-z]:/.test(decoded))
+    return decoded;
+  return decoded.startsWith("/") ? decoded : `/${decoded}`;
+}
+function remapPathToComputer(path, computers, current) {
+  if (!current)
+    return null;
+  const match = matchLibraryRoot(path, computers);
+  if (!match || match.computer.id === current.id)
+    return null;
+  const targetRoot = profileLibraryRoot(current);
+  if (!targetRoot)
+    return null;
+  const remapped = joinRoot(targetRoot, match.relative);
+  return remapped === normalizePath(path) ? null : remapped;
+}
+
+// src/rendered-images.ts
+function asElement(node) {
+  if (!node || typeof node !== "object")
+    return null;
+  const candidate = node;
+  if (candidate.nodeType !== 1)
+    return null;
+  if (typeof candidate.tagName !== "string")
+    return null;
+  if (typeof candidate.querySelectorAll !== "function")
+    return null;
+  return candidate;
+}
+function processRenderedImageMutations(mutations, processImage) {
+  const images = /* @__PURE__ */ new Set();
+  const collect = (node) => {
+    const element = asElement(node);
+    if (!element)
+      return;
+    if (element.tagName.toUpperCase() === "IMG") {
+      images.add(element);
+      return;
+    }
+    const descendants = element.querySelectorAll("img");
+    for (let index = 0; index < descendants.length; index++) {
+      const image = asElement(descendants[index]);
+      if ((image == null ? void 0 : image.tagName.toUpperCase()) === "IMG") {
+        images.add(image);
+      }
+    }
+  };
+  for (const mutation of mutations) {
+    if (mutation.type === "attributes" && mutation.attributeName === "src") {
+      collect(mutation.target);
+      continue;
+    }
+    if (mutation.type !== "childList")
+      continue;
+    for (let index = 0; index < mutation.addedNodes.length; index++) {
+      collect(mutation.addedNodes[index]);
+    }
+  }
+  for (const image of images) {
+    processImage(image);
+  }
+  return images.size;
+}
+
 // src/api.ts
+var import_obsidian = require("obsidian");
 var EagleApiService = class {
   constructor(settings) {
     this.baseUrl = settings.eagleApiBaseUrl;
@@ -492,14 +927,16 @@ function getMimeType(ext) {
 // src/modals.ts
 var import_obsidian2 = require("obsidian");
 var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
-  constructor(app, api, settings) {
+  constructor(app, deps) {
     super(app);
     this.allItems = [];
     this.isLoading = false;
     this.filterContainer = null;
     this.libraryNameEl = null;
+    const { api, settings } = deps;
     this.api = api;
     this.settings = settings;
+    this.buildEmbed = deps.buildEmbed;
     this.activeScopes = new Set(settings.searchScope);
     this.activeFileTypes = new Set(settings.searchFileTypes);
     this.setPlaceholder("Search Eagle items...");
@@ -706,18 +1143,9 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     }
     const editor = activeView.editor;
     if (this.settings.insertAsEmbed) {
-      const filePath = await this.api.getOriginalFilePath(item);
-      if (filePath) {
-        const fileUrl = this.pathToFileUrl(filePath);
-        const filename = `${item.name}.${item.ext}`;
-        let output = `![${filename}](${fileUrl})`;
-        if (this.settings.insertThumbnail) {
-          output += "\n\n" + this.buildMetadataLine(item);
-        }
-        editor.replaceSelection(output);
-        new import_obsidian2.Notice(`Embedded: ${item.name}`);
-        return;
-      }
+      editor.replaceSelection(await this.buildEmbed(item));
+      new import_obsidian2.Notice(`Embedded: ${item.name}`);
+      return;
     }
     const linkUrl = buildEagleItemUrl(item.id);
     let linkText;
@@ -733,93 +1161,6 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
       editor.replaceSelection(linkText);
     }
     new import_obsidian2.Notice(`Inserted link to: ${item.name}`);
-  }
-  pathToFileUrl(path) {
-    let decodedPath = path;
-    try {
-      while (decodedPath.includes("%")) {
-        const decoded = decodeURIComponent(decodedPath);
-        if (decoded === decodedPath)
-          break;
-        decodedPath = decoded;
-      }
-    } catch (e) {
-      decodedPath = path;
-    }
-    const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
-    const normalizedPath = convertedPath.replace(/\\/g, "/");
-    const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
-    const platform = process.platform;
-    if (platform === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
-      const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, "$1:");
-      return `file:///${fixedPath}`;
-    }
-    return `file://${encodedPath}`;
-  }
-  convertPathForCurrentPlatform(path) {
-    if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
-      return path;
-    }
-    const sourceComputer = this.findMatchingComputer(path);
-    if (!sourceComputer) {
-      return path;
-    }
-    const currentPlatform = process.platform;
-    const currentUsername = this.detectCurrentUsername();
-    const currentComputer = this.settings.computers.find(
-      (c) => c.platform === currentPlatform && c.username === currentUsername
-    );
-    if (!currentComputer || sourceComputer.id === currentComputer.id) {
-      return path;
-    }
-    let relativePath = "";
-    if (sourceComputer.platform === "darwin") {
-      relativePath = path.replace(`/Users/${sourceComputer.username}/`, "");
-    } else {
-      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, "i");
-      relativePath = path.replace(winPattern, "").replace(/\\/g, "/");
-    }
-    if (currentComputer.platform === "darwin") {
-      return `/Users/${currentComputer.username}/${relativePath}`;
-    } else {
-      return `C:/Users/${currentComputer.username}/${relativePath}`;
-    }
-  }
-  findMatchingComputer(path) {
-    for (const computer of this.settings.computers) {
-      if (computer.platform === "darwin") {
-        if (path.includes(`/Users/${computer.username}/`)) {
-          return computer;
-        }
-      } else if (computer.platform === "win32") {
-        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
-        if (winPattern.test(path)) {
-          return computer;
-        }
-      }
-    }
-    return null;
-  }
-  detectCurrentUsername() {
-    const adapter = this.app.vault.adapter;
-    const vaultPath = adapter.basePath || "";
-    const platform = String(process.platform);
-    if (platform === "darwin") {
-      const match = vaultPath.match(/^\/Users\/([^/]+)/);
-      if (match)
-        return match[1];
-    } else if (platform === "win32") {
-      const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
-      if (match)
-        return match[1];
-    }
-    return "";
-  }
-  buildMetadataLine(item) {
-    const linkUrl = buildEagleItemUrl(item.id);
-    const tags = item.tags.filter((t) => !t.startsWith("r2:") && t !== "r2-cloud" && t !== "cloud-upload").map((t) => `#${this.normalizeTag(t)}`).join(" ");
-    const dimensions = item.width && item.height ? `${item.width}\xD7${item.height}` : "";
-    return `> **${item.ext.toUpperCase()}** | ${this.formatFileSize(item.size)}${dimensions ? ` | ${dimensions}` : ""} | ${tags || "No tags"} | [Eagle](${linkUrl})`;
   }
   buildLinkCard(item) {
     const linkUrl = buildEagleItemUrl(item.id);
@@ -911,9 +1252,49 @@ var ImagePasteChoiceModal = class extends import_obsidian2.Modal {
     });
   }
 };
+var ConfirmActionModal = class extends import_obsidian2.Modal {
+  constructor(app, options) {
+    var _a;
+    super(app);
+    this.confirmed = false;
+    this.title = options.title;
+    this.body = options.body;
+    this.confirmLabel = (_a = options.confirmLabel) != null ? _a : "Continue";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: this.title });
+    contentEl.createEl("p", { text: this.body });
+    new import_obsidian2.Setting(contentEl).addButton((button) => button.setButtonText("Cancel").onClick(() => this.close())).addButton((button) => button.setButtonText(this.confirmLabel).setCta().onClick(() => {
+      this.confirmed = true;
+      this.close();
+    }));
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (this.resolvePromise) {
+      this.resolvePromise(this.confirmed);
+    }
+  }
+  getResponse() {
+    return new Promise((resolve) => {
+      this.resolvePromise = resolve;
+    });
+  }
+};
 
 // src/settings.ts
 var import_obsidian3 = require("obsidian");
+var import_os = require("os");
+var LINK_MODE_DESCRIPTIONS = {
+  "photo-info": "Thumbnail linked to Eagle, plus one line of metadata. Renders on every device.",
+  "photo-only": "Thumbnail linked to Eagle, nothing else. Renders on every device.",
+  "link-only": "Shows only the item name as an eagle:// hyperlink. Opens that item in Eagle without copying a file into the vault.",
+  "cmds-eagle": "Embeds the original by absolute file:// path, plus one line of metadata. Renders on registered desktops that mount the library \u2014 never on mobile.",
+  "cmds-eagle-photo-only": "Embeds only the original image by absolute file:// path, with no metadata line. Renders on registered desktops that mount the library \u2014 never on mobile.",
+  "cmds-eagle-photo-link": "Embeds the original image as an eagle:// hyperlink. Clicking the image opens that item in Eagle."
+};
 var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -944,8 +1325,35 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       }
     }));
     new import_obsidian3.Setting(containerEl).setName("Image paste/drop behavior").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Default image behavior").setDesc("What to do when pasting or dropping images").addDropdown((dropdown) => dropdown.addOption("ask", "Ask every time").addOption("eagle", "Always upload to Eagle (local)").addOption("local", "Always save to vault (local)").addOption("cloud", "Always upload to cloud").setValue(this.plugin.settings.imagePasteBehavior).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Where to store images").setDesc("What to do with an image when you paste or drop it").addDropdown((dropdown) => dropdown.addOption("eagle", "Import into Eagle (recommended)").addOption("local", "Save to vault as an attachment").addOption("cloud", "Upload to cloud provider").addOption("ask", "Ask every time").setValue(this.plugin.settings.imagePasteBehavior).onChange(async (value) => {
       this.plugin.settings.imagePasteBehavior = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("What goes into the note").setDesc(LINK_MODE_DESCRIPTIONS[this.plugin.settings.linkMode]).addDropdown((dropdown) => dropdown.addOption("photo-info", "Photo + info \u2014 portable thumbnail").addOption("photo-only", "Photo only \u2014 portable thumbnail").addOption("cmds-eagle", "Original photo + info \u2014 registered desktops").addOption("cmds-eagle-photo-only", "Original photo only \u2014 registered desktops").addOption("cmds-eagle-photo-link", "Original photo linked to eagle \u2014 registered desktops").addOption("link-only", "Eagle link only \u2014 hyperlink text").setValue(this.plugin.settings.linkMode).onChange(async (value) => {
+      this.plugin.settings.linkMode = value;
+      await this.plugin.saveSettings();
+      this.display();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Thumbnail folder").setDesc("Vault folder that receives the copied thumbnails, named by Eagle item id. Originals stay in Eagle. Used by the photo modes.").addText((text) => text.setPlaceholder("attachments/eagle").setValue(this.plugin.settings.vaultThumbnailDir).onChange(async (value) => {
+      this.plugin.settings.vaultThumbnailDir = value.trim() || "attachments/eagle";
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Hidden tag prefixes in card").setDesc("Comma-separated tag prefixes to leave out of the metadata card \u2014 they exist for tooling, not for readers.").addText((text) => text.setPlaceholder("cli-eagle:, r2:").setValue(this.plugin.settings.cardHiddenTagPrefixes.join(", ")).onChange(async (value) => {
+      this.plugin.settings.cardHiddenTagPrefixes = value.split(",").map((prefix) => prefix.trim()).filter(Boolean);
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Thumbnail wait timeout (ms)").setDesc("How long to wait for Eagle to generate a thumbnail before falling back to a plain deep link. Large files need more time.").addText((text) => text.setPlaceholder("10000").setValue(String(this.plugin.settings.thumbnailPollTimeoutMs)).onChange(async (value) => {
+      const parsed = parseInt(value, 10);
+      this.plugin.settings.thumbnailPollTimeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 1e4;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Thumbnail size warning (KB)").setDesc("Warn when a copied thumbnail exceeds this size. Eagle skips thumbnails for small images, so the original is copied instead. Warns only \u2014 never blocks.").addText((text) => text.setPlaceholder("2048").setValue(String(this.plugin.settings.thumbnailMaxKB)).onChange(async (value) => {
+      const parsed = parseInt(value, 10);
+      this.plugin.settings.thumbnailMaxKB = Number.isFinite(parsed) && parsed > 0 ? parsed : 2048;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Remove staged copy after import").setDesc("Delete the file staged under .eagle-temp/ only after Eagle's copied original exists at its complete size. Turn off only when debugging.").addToggle((toggle) => toggle.setValue(this.plugin.settings.deleteTempAfterImport).onChange(async (value) => {
+      this.plugin.settings.deleteTempAfterImport = value;
       await this.plugin.saveSettings();
     }));
     new import_obsidian3.Setting(containerEl).setName("Excalidraw integration").setHeading();
@@ -1274,6 +1682,10 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.autoConvertCrossPlatformPaths = value;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian3.Setting(containerEl).setName("Conversion mode").setDesc("Render-only remaps images as they are displayed and never edits the note \u2014 safe when several machines share the vault. Modify source rewrites the note itself.").addDropdown((dropdown) => dropdown.addOption("render-only", "Render only (recommended)").addOption("modify-source", "Modify note source").setValue(this.plugin.settings.crossPlatformConversionMode).onChange(async (value) => {
+      this.plugin.settings.crossPlatformConversionMode = value;
+      await this.plugin.saveSettings();
+    }));
     const currentPlatform = process.platform;
     const currentUsername = this.detectCurrentUsername();
     new import_obsidian3.Setting(containerEl).setName("Add current computer").setDesc(`Detected: ${currentPlatform === "darwin" ? "macOS" : "Windows"} / ${currentUsername}`).addButton((button) => button.setButtonText("Add").onClick(async () => {
@@ -1293,6 +1705,11 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         eagleLibraryPath: "",
         isCurrentComputer: true
       };
+      for (const profile of this.plugin.settings.computers) {
+        if (profile.platform === currentPlatform && profile.username === currentUsername) {
+          profile.isCurrentComputer = false;
+        }
+      }
       this.plugin.settings.computers.push(newProfile);
       await this.plugin.saveSettings();
       this.display();
@@ -1304,8 +1721,13 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         text: "Registered Computers",
         cls: "cmdspace-eagle-computer-list-title"
       });
+      const currentComputer = findCurrentComputer(
+        this.plugin.settings.computers,
+        currentPlatform,
+        currentUsername
+      );
       for (const computer of this.plugin.settings.computers) {
-        const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
+        const isCurrentComputer = computer.id === (currentComputer == null ? void 0 : currentComputer.id);
         const computerEl = listContainer.createDiv({ cls: "cmdspace-eagle-computer-item" });
         if (isCurrentComputer) {
           computerEl.addClass("is-current");
@@ -1322,26 +1744,51 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
           attr: { style: "font-size: 12px; color: var(--text-muted);" }
         });
         const deleteBtn = headerRow.createEl("button", { text: "\xD7", cls: "cmdspace-eagle-computer-delete" });
-        const subPathContainer = computerEl.createDiv({ attr: { style: "margin-top: 8px; width: 100%;" } });
-        subPathContainer.createEl("label", {
-          text: "Sub-path (folders between /Users/name/ and sync folder)",
+        const rootContainer = computerEl.createDiv({ attr: { style: "margin-top: 8px; width: 100%;" } });
+        rootContainer.createEl("label", {
+          text: "Eagle library root on this computer (absolute path)",
           attr: { style: "font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;" }
         });
-        const subPathInput = subPathContainer.createEl("input", {
+        const rootInput = rootContainer.createEl("input", {
           type: "text",
-          value: computer.subPath || "",
-          placeholder: "e.g., OneDrive or Dropbox/Work",
+          value: profileLibraryRoot(computer) || "",
+          placeholder: computer.platform === "darwin" ? "e.g., /Volumes/Assets/My Library.library" : "e.g., Z:\\My Library.library or \\\\NAS\\Assets\\My Library.library",
           attr: { style: "width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);" }
         });
-        subPathInput.addEventListener("change", () => {
+        rootInput.addEventListener("change", () => {
           void (async () => {
+            const value = rootInput.value.trim();
+            if (value && !isAbsolutePath(value)) {
+              new import_obsidian3.Notice("Enter an absolute path: /Volumes/\u2026, Z:\\\u2026 or \\\\NAS\\share\\\u2026");
+              rootInput.value = profileLibraryRoot(computer) || "";
+              return;
+            }
             const idx = this.plugin.settings.computers.findIndex((c) => c.id === computer.id);
             if (idx >= 0) {
-              this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
+              this.plugin.settings.computers[idx].eagleLibraryPath = value;
               await this.plugin.saveSettings();
             }
           })();
         });
+        const matchesRuntimeIdentity = computer.platform === currentPlatform && computer.username === currentUsername;
+        if (matchesRuntimeIdentity && !isCurrentComputer) {
+          const claimBtn = computerEl.createEl("button", {
+            text: "Set as this computer",
+            attr: { style: "margin-top: 8px; font-size: 11px;" }
+          });
+          claimBtn.addEventListener("click", () => {
+            void (async () => {
+              for (const profile of this.plugin.settings.computers) {
+                if (profile.platform === currentPlatform && profile.username === currentUsername) {
+                  profile.isCurrentComputer = profile.id === computer.id;
+                }
+              }
+              await this.plugin.saveSettings();
+              this.display();
+              new import_obsidian3.Notice(`Now treating "${computer.name}" as this computer`);
+            })();
+          });
+        }
         deleteBtn.addEventListener("click", () => {
           void (async () => {
             this.plugin.settings.computers = this.plugin.settings.computers.filter((c) => c.id !== computer.id);
@@ -1354,6 +1801,10 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     }
   }
   detectCurrentUsername() {
+    try {
+      return (0, import_os.userInfo)().username;
+    } catch (e) {
+    }
     const adapter = this.app.vault.adapter;
     const vaultPath = adapter.basePath || "";
     const platform = String(process.platform);
@@ -1788,6 +2239,7 @@ function getExtFromFilename(filename) {
 }
 
 // src/main.ts
+var TEMP_DIR = ".eagle-temp";
 var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
@@ -1802,7 +2254,7 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
       id: "search-eagle",
       name: "Search Eagle library and embed",
       editorCallback: (editor, view) => {
-        new EagleSearchModal(this.app, this.api, this.settings).open();
+        this.openSearchModal();
       }
     });
     this.addCommand({
@@ -1830,7 +2282,32 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
       id: "convert-cross-platform-paths",
       name: "Convert cross-platform image paths in current note",
       callback: async () => {
+        if (this.settings.crossPlatformConversionMode === "render-only") {
+          this.convertCrossPlatformRenderOnly();
+          return;
+        }
         await this.convertCrossPlatformPaths();
+      }
+    });
+    this.addCommand({
+      id: "migrate-note-images-to-eagle",
+      name: "Move this note's local images into Eagle",
+      callback: async () => {
+        await this.migrateLocalImagesToEagle("note");
+      }
+    });
+    this.addCommand({
+      id: "migrate-vault-images-to-eagle",
+      name: "Move all local images in the vault into Eagle",
+      callback: async () => {
+        await this.migrateLocalImagesToEagle("vault");
+      }
+    });
+    this.addCommand({
+      id: "verify-eagle-links",
+      name: "Verify Eagle links in current note",
+      callback: async () => {
+        await this.verifyEagleLinks();
       }
     });
     this.registerEvent(
@@ -1866,7 +2343,9 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
     this.addSettingTab(new CMDSPACEEagleSettingTab(this.app, this));
     this.registerMarkdownPostProcessor((el, ctx) => {
       this.processEagleLinks(el);
+      this.processFileUrls(el);
     });
+    this.observeRenderedImages();
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         window.setTimeout(() => this.processActiveView(), 100);
@@ -1890,7 +2369,9 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
         console.log(`[CMDS Eagle] conversionMode: ${this.settings.crossPlatformConversionMode}`);
         console.log(`[CMDS Eagle] lastModifiedFile: ${this.lastModifiedFile}`);
         if (file && this.settings.enableCrossPlatform && this.settings.autoConvertCrossPlatformPaths) {
-          if (this.lastModifiedFile !== file.path) {
+          if (this.settings.crossPlatformConversionMode === "render-only") {
+            window.setTimeout(() => this.autoConvertRenderOnlyOnFileOpen(), 300);
+          } else if (this.lastModifiedFile !== file.path) {
             console.log(`[CMDS Eagle] Triggering auto-conversion for: ${file.path}`);
             window.setTimeout(() => {
               void this.autoConvertOnFileOpen(file);
@@ -1903,7 +2384,7 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
       })
     );
     this.addRibbonIcon("image", "CMDSPACE: Eagle", () => {
-      new EagleSearchModal(this.app, this.api, this.settings).open();
+      this.openSearchModal();
     });
     this.registerExcalidrawIntegration();
   }
@@ -1913,6 +2394,38 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
   async loadSettings() {
     const saved = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+    await this.migrateLinkMode(saved);
+  }
+  /**
+   * A pre-release build of this fork split storage and note format into a single
+   * `captureMode`. They are separate concerns, so storage went back to the
+   * upstream `imagePasteBehavior` and the note format became `linkMode`.
+   * Convert once, then drop the old keys so they cannot drift back into effect.
+   */
+  async migrateLinkMode(saved) {
+    const legacy = saved == null ? void 0 : saved.captureMode;
+    if (!legacy)
+      return;
+    if (legacy === "eagle-thumbnail" || legacy === "eagle-original-link") {
+      this.settings.imagePasteBehavior = "eagle";
+      this.settings.linkMode = legacy === "eagle-original-link" ? "cmds-eagle" : (saved == null ? void 0 : saved.insertMetadataCard) === false ? "photo-only" : "photo-info";
+    } else {
+      this.settings.imagePasteBehavior = legacy;
+    }
+    delete this.settings.captureMode;
+    delete this.settings.insertMetadataCard;
+    await this.saveSettings();
+    console.log(`[CMDS Eagle] Migrated captureMode="${legacy}" to imagePasteBehavior="${this.settings.imagePasteBehavior}" + linkMode="${this.settings.linkMode}"`);
+  }
+  openSearchModal() {
+    new EagleSearchModal(this.app, {
+      api: this.api,
+      settings: this.settings,
+      buildEmbed: (item) => {
+        var _a, _b;
+        return this.buildEmbedForItem(item, (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : "");
+      }
+    }).open();
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1936,18 +2449,11 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
     new import_obsidian5.Notice(`Inserted link to: ${item.name}`);
   }
   async insertItemLink(editor, item) {
+    var _a, _b;
     if (this.settings.insertAsEmbed) {
-      const filePath = await this.api.getOriginalFilePath(item);
-      if (filePath) {
-        const fileUrl = this.pathToFileUrl(filePath);
-        const filename = `${item.name}.${item.ext}`;
-        let output = `![${filename}](${fileUrl})`;
-        if (this.settings.insertThumbnail) {
-          output += "\n\n" + this.buildMetadataCard(item);
-        }
-        editor.replaceSelection(output);
-        return;
-      }
+      const notePath = (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : "";
+      editor.replaceSelection(await this.buildEmbedForItem(item, notePath));
+      return;
     }
     const linkUrl = buildEagleItemUrl(item.id);
     if (this.settings.insertThumbnail) {
@@ -1957,19 +2463,6 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
       const link = this.settings.linkFormat === "wikilink" ? `[[${linkUrl}|${item.name}]]` : `[${item.name}](${linkUrl})`;
       editor.replaceSelection(link);
     }
-  }
-  buildMetadataCard(item) {
-    const linkUrl = buildEagleItemUrl(item.id);
-    const tags = item.tags.filter((t) => !t.startsWith("r2:") && t !== "r2-cloud" && t !== "cloud-upload").map((t) => `#${this.normalizeTag(t)}`).join(" ");
-    const dimensions = item.width && item.height ? `${item.width}\xD7${item.height}` : "N/A";
-    const isUploaded = hasR2Upload(item);
-    const cloudUrl = this.api.getCloudUrl(item);
-    let linkSection = `[Open in Eagle](${linkUrl})`;
-    if (cloudUrl) {
-      linkSection += ` | [Cloud](${cloudUrl})`;
-    }
-    return `> **${item.ext.toUpperCase()}** | ${this.formatFileSize(item.size)} | ${dimensions} | ${isUploaded ? "\u2601\uFE0F" : "\u{1F4C1}"} | ${tags || "No tags"}
-> ${linkSection}`;
   }
   buildLinkCard(item) {
     const linkUrl = buildEagleItemUrl(item.id);
@@ -2299,72 +2792,33 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   processActiveView() {
-    return;
+    if (!this.settings.enableCrossPlatform)
+      return;
+    if (this.settings.crossPlatformConversionMode !== "render-only")
+      return;
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+    if (view)
+      this.convertRenderedImages(view);
   }
-  tryConvertImagePath(img) {
-    const src = img.getAttribute("src");
-    if (!src)
-      return;
-    const alreadyConverted = img.getAttribute("data-original-src");
-    if (alreadyConverted)
-      return;
-    console.log(`[CMDS Eagle] Checking image src: ${src}`);
-    let extractedPath = null;
-    if (src.startsWith("file://")) {
-      extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
-    } else if (src.startsWith("app://")) {
-      const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
-      if (appMatch) {
-        extractedPath = this.fullyDecodeUri(appMatch[1]);
-      }
-    }
-    if (!extractedPath) {
-      console.log(`[CMDS Eagle] No extractable path`);
-      return;
-    }
-    console.log(`[CMDS Eagle] Extracted: ${extractedPath}`);
-    if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
-      extractedPath = "/" + extractedPath;
-    }
-    const isDifferent = this.isPathFromDifferentPlatform(extractedPath);
-    console.log(`[CMDS Eagle] Is from different platform: ${isDifferent}`);
-    if (!isDifferent)
-      return;
-    const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
-    if (convertedPath !== extractedPath) {
-      const newSrc = this.pathToFileUrl(convertedPath);
-      console.log(`[CMDS Eagle] Setting new src: ${newSrc}`);
-      const newImg = activeDocument.createElement("img");
-      newImg.src = newSrc;
-      newImg.alt = img.alt;
-      newImg.className = img.className;
-      newImg.setAttribute("data-original-src", src);
-      newImg.setAttribute("data-xplatform-replaced", "true");
-      if (img.parentNode) {
-        img.parentNode.replaceChild(newImg, img);
-        console.log(`[CMDS Eagle] Image element replaced`);
-      }
-    }
-  }
-  isPathFromDifferentPlatform(path) {
-    const currentPlatform = this.getCurrentPlatform();
-    const currentUsername = this.getCurrentUsername();
-    for (const computer of this.settings.computers) {
-      if (computer.platform === currentPlatform && computer.username === currentUsername) {
-        continue;
-      }
-      if (computer.platform === "darwin") {
-        if (path.includes(`/Users/${computer.username}/`)) {
-          return true;
-        }
-      } else if (computer.platform === "win32") {
-        const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
-        if (winPattern.test(path)) {
-          return true;
-        }
-      }
-    }
-    return false;
+  /** Live Preview creates and reuses image nodes after Markdown post-processors run. */
+  observeRenderedImages() {
+    const observer = new MutationObserver((mutations) => {
+      if (!this.settings.enableCrossPlatform)
+        return;
+      if (this.settings.crossPlatformConversionMode !== "render-only")
+        return;
+      processRenderedImageMutations(
+        mutations,
+        (image) => this.convertImageSrcForRendering(image)
+      );
+    });
+    observer.observe(this.app.workspace.containerEl, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src"]
+    });
+    this.register(() => observer.disconnect());
   }
   processEagleLinks(el) {
     const links = el.querySelectorAll('a[href^="eagle://"]');
@@ -2389,49 +2843,38 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       this.convertImageSrcForRendering(img);
     });
   }
+  /**
+   * Points one rendered image at this computer's copy. Returns true when the
+   * element was rewritten. The note on disk is never touched, so two machines
+   * viewing the same vault cannot fight over its contents.
+   */
   convertImageSrcForRendering(img) {
     const src = img.getAttribute("src");
     if (!src)
-      return;
-    if (img.getAttribute("data-xplatform-converted"))
-      return;
-    let extractedPath = null;
-    if (src.startsWith("app://")) {
-      const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
-      if (appMatch) {
-        extractedPath = this.fullyDecodeUri(appMatch[1]);
-      }
-    } else if (src.startsWith("file://")) {
-      extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
+      return false;
+    const renderedSrc = img.getAttribute("data-xplatform-rendered-src");
+    if (img.getAttribute("data-xplatform-converted") && renderedSrc === src) {
+      return false;
     }
+    img.removeAttribute("data-xplatform-converted");
+    img.removeAttribute("data-xplatform-rendered-src");
+    img.removeAttribute("data-original-src");
+    const extractedPath = extractPathFromImageSrc(src);
     if (!extractedPath)
-      return;
-    if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
-      extractedPath = "/" + extractedPath;
-    }
-    if (!this.isPathFromDifferentPlatform(extractedPath))
-      return;
-    const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
-    if (convertedPath !== extractedPath) {
-      const newSrc = this.pathToFileUrl(convertedPath);
-      img.setAttribute("src", newSrc);
-      img.setAttribute("data-xplatform-converted", "true");
-      img.setAttribute("data-original-src", src);
-    }
-  }
-  fullyDecodeUri(str) {
-    let decoded = str;
-    try {
-      while (decoded.includes("%")) {
-        const next = decodeURIComponent(decoded);
-        if (next === decoded)
-          break;
-        decoded = next;
-      }
-    } catch (e) {
-      return str;
-    }
-    return decoded;
+      return false;
+    const convertedPath = remapPathToComputer(
+      extractedPath,
+      this.settings.computers,
+      this.getCurrentComputer()
+    );
+    if (!convertedPath)
+      return false;
+    const convertedSrc = pathToResourceUrl(convertedPath, import_obsidian5.Platform.resourcePathPrefix);
+    img.setAttribute("data-xplatform-converted", "true");
+    img.setAttribute("data-original-src", src);
+    img.setAttribute("data-xplatform-rendered-src", convertedSrc);
+    img.setAttribute("src", convertedSrc);
+    return true;
   }
   normalizeTag(tag) {
     let normalized = tag.replace(/\s+/g, "-");
@@ -2482,43 +2925,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const { files } = clipboardData;
     if (!files || !this.allFilesAreImages(files))
       return;
-    if (this.settings.imagePasteBehavior === "local") {
-      return;
-    }
-    const filesCopy = Array.from(files);
-    if (this.settings.imagePasteBehavior === "eagle") {
-      for (const file of filesCopy) {
-        await this.uploadFileWithProgress(file, editor);
-      }
-      return;
-    }
-    if (this.settings.imagePasteBehavior === "cloud") {
-      for (const file of filesCopy) {
-        await this.uploadToCloudWithProgress(file, editor);
-      }
-      return;
-    }
-    const cloudProviderName = this.getActiveCloudProviderName();
-    const modal = new ImagePasteChoiceModal(this.app, cloudProviderName);
-    modal.open();
-    const response = await modal.getResponse();
-    if (response.rememberChoice && response.choice !== "cancel") {
-      this.settings.imagePasteBehavior = response.choice;
-      await this.saveSettings();
-    }
-    if (response.choice === "eagle") {
-      for (const file of filesCopy) {
-        await this.uploadFileWithProgress(file, editor);
-      }
-    } else if (response.choice === "local") {
-      for (const file of filesCopy) {
-        await this.saveImageLocally(file, editor);
-      }
-    } else if (response.choice === "cloud") {
-      for (const file of filesCopy) {
-        await this.uploadToCloudWithProgress(file, editor);
-      }
-    }
+    await this.captureImageFiles(files, editor);
   }
   // Synchronous gate for the editor-drop handler (see willHandlePaste).
   willHandleDrop(evt) {
@@ -2531,6 +2938,11 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const { files } = evt.dataTransfer || { files: null };
     if (!files || !this.allFilesAreImages(files))
       return;
+    await this.captureImageFiles(files, editor);
+  }
+  // Shared by paste and drop — the two entry points differ only in how they
+  // obtain the FileList.
+  async captureImageFiles(files, editor) {
     if (this.settings.imagePasteBehavior === "local") {
       return;
     }
@@ -2612,13 +3024,14 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   async uploadFileWithProgress(file, editor) {
+    var _a, _b;
     const pasteId = this.generatePasteId();
     const placeholderText = `![Uploading ${file.name}...](${pasteId})`;
     editor.replaceSelection(placeholderText);
     try {
-      const imageUrl = await this.uploadImageToEagle(file);
-      const markdownImage = `![${file.name}](${imageUrl})`;
-      this.replaceTextInDocument(editor, placeholderText, markdownImage);
+      const notePath = (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : "";
+      const markdown = await this.uploadImageToEagle(file, notePath);
+      this.replaceTextInDocument(editor, placeholderText, markdown);
       new import_obsidian5.Notice(`Uploaded to Eagle: ${file.name}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -2639,13 +3052,14 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const placeholderText = `![Uploading to ${providerName}...](${pasteId})`;
     editor.replaceSelection(placeholderText);
     try {
-      const tempPath = await this.saveToTempLocation(file);
+      const temp = await this.saveToTempLocation(file);
       const ext = getExtFromFilename(file.name);
       const mimeType = getMimeType2(ext);
-      const result = await provider.upload(tempPath, file.name, mimeType);
+      const result = await provider.upload(temp.absolutePath, file.name, mimeType);
       if (result.success && result.publicUrl) {
         const markdownImage = `![${file.name}](${result.publicUrl})`;
         this.replaceTextInDocument(editor, placeholderText, markdownImage);
+        await this.removeTempFile(temp);
         new import_obsidian5.Notice(`Uploaded to ${providerName}: ${file.name}`);
       } else {
         throw new Error(result.error || "Upload failed");
@@ -2746,6 +3160,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     return null;
   }
   async uploadLocalImageToEagle(editor, localImage) {
+    var _a, _b;
     const { file, startPos, endPos, originalText } = localImage;
     const placeholderText = `![Uploading ${file.name}...](uploading)`;
     editor.replaceRange(placeholderText, startPos, endPos);
@@ -2764,20 +3179,164 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       if (!result.success || !result.itemId) {
         throw new Error("Failed to add image to Eagle");
       }
-      await this.delay(1e3);
-      const thumbnailPath = await this.api.getThumbnailPath(result.itemId);
-      const imageUrl = thumbnailPath ? `file://${thumbnailPath}` : `eagle://item/${result.itemId}`;
-      const markdownImage = `![${file.basename}](${imageUrl})`;
-      this.replaceTextInDocument(editor, placeholderText, markdownImage);
+      const item = await this.waitForImportedItem(result.itemId);
+      if (!item) {
+        throw new Error(`Eagle accepted the file but did not return item ${result.itemId}`);
+      }
+      const originalFilePath = await this.waitForImportedOriginal(item);
+      if (!originalFilePath) {
+        throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready`);
+      }
+      const notePath = (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : "";
+      const markdown = await this.buildEmbedForItem(item, notePath, { originalFilePath });
+      this.replaceTextInDocument(editor, placeholderText, markdown);
       new import_obsidian5.Notice(`Uploaded to Eagle: ${file.name}`);
-      await this.offerToReplaceOtherReferences(file, imageUrl, { line: startPos.line, ch: startPos.ch });
+      await this.offerToReplaceOtherReferences(file, item, { line: startPos.line, ch: startPos.ch });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       this.replaceTextInDocument(editor, placeholderText, originalText);
       new import_obsidian5.Notice(`Failed to upload: ${errorMessage}`);
     }
   }
-  async offerToReplaceOtherReferences(originalFile, newUrl, excludePosition) {
+  // ── Vault backfill ──────────────────────────────────────────────────────
+  // Existing vaults already carry originals. These commands move them into
+  // Eagle, rewrite every reference to the canonical form, and send the vault
+  // copy to the system trash — reversible, but never silent.
+  async migrateLocalImagesToEagle(scope) {
+    if (!await this.api.isConnected()) {
+      new import_obsidian5.Notice("Eagle is not running \u2014 start it and try again");
+      return;
+    }
+    const targets = this.collectMigratableImages(scope);
+    if (!targets)
+      return;
+    if (targets.length === 0) {
+      new import_obsidian5.Notice(scope === "vault" ? "No local images found in the vault" : "No local images found in this note");
+      return;
+    }
+    const totalMB = (targets.reduce((sum, file) => sum + file.stat.size, 0) / (1024 * 1024)).toFixed(1);
+    const modal = new ConfirmActionModal(this.app, {
+      title: "Move images into Eagle",
+      body: `${targets.length} image(s), ${totalMB} MB. Each one is imported into Eagle, every reference to it is rewritten to a thumbnail reference, and the vault copy is moved to the system trash.`,
+      confirmLabel: "Move to Eagle"
+    });
+    modal.open();
+    if (!await modal.getResponse())
+      return;
+    new import_obsidian5.Notice(`Moving ${targets.length} image(s) into Eagle\u2026`);
+    let moved = 0;
+    const failures = [];
+    for (const file of targets) {
+      const succeeded = await this.migrateSingleImage(file);
+      if (succeeded) {
+        moved++;
+      } else {
+        failures.push(file.path);
+      }
+    }
+    if (failures.length > 0) {
+      console.warn("[CMDS Eagle] Files left in the vault:", failures);
+    }
+    new import_obsidian5.Notice(
+      failures.length === 0 ? `Moved ${moved} image(s) into Eagle` : `Moved ${moved} image(s); ${failures.length} left in the vault \u2014 see console`
+    );
+  }
+  /** Import one vault file, rewrite every reference to it, then trash the original. */
+  async migrateSingleImage(file) {
+    try {
+      const result = await this.api.addFromPath({
+        path: this.getAbsolutePath(file.path),
+        name: file.basename,
+        folderId: this.settings.defaultFolder || void 0
+      });
+      if (!result.success || !result.itemId)
+        return false;
+      const item = await this.waitForImportedItem(result.itemId);
+      if (!item)
+        return false;
+      const originalFilePath = await this.waitForImportedOriginal(item);
+      if (!originalFilePath)
+        return false;
+      const references = this.findAllReferencesToFile(file);
+      await this.replaceAllReferences(references, item, originalFilePath);
+      await this.app.fileManager.trashFile(file);
+      return true;
+    } catch (error) {
+      console.error("[CMDS Eagle] Failed to migrate:", file.path, error);
+      return false;
+    }
+  }
+  collectMigratableImages(scope) {
+    var _a;
+    let notes;
+    if (scope === "vault") {
+      notes = this.app.vault.getMarkdownFiles();
+    } else {
+      const activeFile = this.app.workspace.getActiveFile();
+      if (!activeFile) {
+        new import_obsidian5.Notice("No active file");
+        return null;
+      }
+      notes = [activeFile];
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const targets = [];
+    for (const note of notes) {
+      const cache = this.app.metadataCache.getFileCache(note);
+      for (const embed of (_a = cache == null ? void 0 : cache.embeds) != null ? _a : []) {
+        const dest = this.app.metadataCache.getFirstLinkpathDest(embed.link, note.path);
+        if (!dest || seen.has(dest.path) || !this.isMigratableImage(dest))
+          continue;
+        seen.add(dest.path);
+        targets.push(dest);
+      }
+    }
+    return targets;
+  }
+  isMigratableImage(file) {
+    const thumbnailDir = this.settings.vaultThumbnailDir.replace(/^\/+|\/+$/g, "");
+    if (thumbnailDir && file.path.startsWith(`${thumbnailDir}/`))
+      return false;
+    if (file.path.startsWith(`${TEMP_DIR}/`))
+      return false;
+    const extensions = SUPPORTED_IMAGE_EXTENSIONS;
+    return extensions.includes(file.extension.toLowerCase());
+  }
+  /**
+   * Deleting an item in Eagle leaves the vault thumbnail behind and the
+   * `eagle://` link dead. Nothing detects that on its own, so this reports it.
+   */
+  async verifyEagleLinks() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new import_obsidian5.Notice("No active file");
+      return;
+    }
+    const content = await this.app.vault.read(activeFile);
+    const ids = /* @__PURE__ */ new Set();
+    const linkRegex = /eagle:\/\/item\/([A-Za-z0-9]+)/g;
+    let match;
+    while ((match = linkRegex.exec(content)) !== null) {
+      ids.add(match[1]);
+    }
+    if (ids.size === 0) {
+      new import_obsidian5.Notice("No Eagle links in this note");
+      return;
+    }
+    const dead = [];
+    for (const id of ids) {
+      const item = await this.api.getItemInfo(id);
+      if (!item || item.isDeleted)
+        dead.push(id);
+    }
+    if (dead.length === 0) {
+      new import_obsidian5.Notice(`All ${ids.size} Eagle link(s) resolve`);
+      return;
+    }
+    console.warn("[CMDS Eagle] Dead Eagle links:", dead);
+    new import_obsidian5.Notice(`${dead.length} of ${ids.size} Eagle link(s) no longer resolve \u2014 see console for ids`);
+  }
+  async offerToReplaceOtherReferences(originalFile, item, excludePosition) {
     const references = this.findAllReferencesToFile(originalFile);
     const filteredRefs = [];
     for (const ref of references) {
@@ -2799,7 +3358,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const shouldReplace = await this.confirmReplaceReferences(totalCount, fileCount, originalFile.name);
     if (!shouldReplace)
       return;
-    await this.replaceAllReferences(filteredRefs, originalFile, newUrl);
+    await this.replaceAllReferences(filteredRefs, item);
     new import_obsidian5.Notice(`Replaced ${totalCount} references in ${fileCount} files`);
   }
   findAllReferencesToFile(targetFile) {
@@ -2841,11 +3400,15 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       window.setTimeout(() => resolve(false), 1e4);
     });
   }
-  async replaceAllReferences(references, originalFile, newUrl) {
+  async replaceAllReferences(references, item, originalFilePath) {
     for (const ref of references) {
       const file = this.app.vault.getAbstractFileByPath(ref.notePath);
       if (!(file instanceof import_obsidian5.TFile))
         continue;
+      const newMarkdown = await this.buildEmbedForItem(item, ref.notePath, {
+        includeCard: false,
+        originalFilePath
+      });
       let content = await this.app.vault.read(file);
       const sortedPositions = [...ref.positions].sort((a, b) => {
         if (a.line !== b.line)
@@ -2853,7 +3416,6 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         return b.ch - a.ch;
       });
       for (const pos of sortedPositions) {
-        const newMarkdown = `![${originalFile.basename}](${newUrl})`;
         const lines = content.split("\n");
         const line = lines[pos.line];
         if (line) {
@@ -2897,7 +3459,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     return normalizedText.includes(".library/images/") && normalizedText.includes(".info/");
   }
   async handleEagleLibraryPathPaste(path, editor) {
-    const normalizedPath = this.safeDecodeUri(path.replace(/\\/g, "/")).replace(/^file:\/\/+/, "/");
+    const normalizedPath = safeDecodeUri2(path.replace(/\\/g, "/")).replace(/^file:\/\/+/, "/");
     const idMatch = normalizedPath.match(/\/([A-Za-z0-9]+)\.info\//);
     if (idMatch) {
       const item = await this.api.getItemInfo(idMatch[1]);
@@ -2919,7 +3481,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const thumbnailPath = await this.api.getThumbnailPath(itemId);
     if (!thumbnailPath)
       return null;
-    const decodedPath = this.safeDecodeUri(thumbnailPath);
+    const decodedPath = safeDecodeUri2(thumbnailPath);
     const folderPath = decodedPath.substring(0, decodedPath.lastIndexOf("/"));
     const originalFileName = `${name}.${ext}`;
     return `${folderPath}/${originalFileName}`;
@@ -3032,20 +3594,32 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const providerName = this.getActiveCloudProviderName();
     for (const file of files) {
       try {
-        const tempPath = await this.saveToTempLocation(file);
+        const temp = await this.saveToTempLocation(file);
         let eagleNote = "";
+        let canRemoveTemp = true;
         if (this.settings.excalidrawImportToEagle) {
           const added = await this.api.addFromPath({
-            path: tempPath,
+            path: temp.absolutePath,
             name: file.name.replace(/\.[^.]+$/, ""),
             folderId: this.settings.defaultFolder || void 0
           });
-          if (added.success)
-            eagleNote = " + Eagle";
+          if (added.success && added.itemId) {
+            const item = await this.waitForImportedItem(added.itemId);
+            const originalFilePath = item ? await this.waitForImportedOriginal(item) : null;
+            if (originalFilePath) {
+              eagleNote = " + Eagle";
+            } else {
+              canRemoveTemp = false;
+              new import_obsidian5.Notice(`Eagle import is not complete; staged copy kept at ${temp.vaultPath}`);
+            }
+          }
         }
-        const result = await provider.upload(tempPath, file.name, getMimeType2(getExtFromFilename(file.name)));
+        const result = await provider.upload(temp.absolutePath, file.name, getMimeType2(getExtFromFilename(file.name)));
         if (result.success && result.publicUrl) {
           await view.addImageWithURL(result.publicUrl);
+          if (canRemoveTemp) {
+            await this.removeTempFile(temp);
+          }
           new import_obsidian5.Notice(`Uploaded to ${providerName}${eagleNote} & added to canvas: ${file.name}`);
         } else {
           new import_obsidian5.Notice(`Failed to upload ${file.name}`);
@@ -3056,130 +3630,164 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       }
     }
   }
-  safeDecodeUri(str) {
-    try {
-      return decodeURIComponent(str);
-    } catch (e) {
-      return str;
-    }
-  }
+  /**
+   * Serialises a plain filesystem path, remapping it onto this computer first.
+   * Callers pass plain paths; the encoder escapes them exactly once, so a
+   * filename containing a literal `%20` stays a literal `%20`.
+   */
   pathToFileUrl(path) {
-    let decodedPath = path;
-    try {
-      while (decodedPath.includes("%")) {
-        const decoded = decodeURIComponent(decodedPath);
-        if (decoded === decodedPath)
-          break;
-        decodedPath = decoded;
-      }
-    } catch (e) {
-      decodedPath = path;
-    }
-    const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
-    const normalizedPath = convertedPath.replace(/\\/g, "/");
-    const encodedPath = normalizedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
-    if (this.getCurrentPlatform() === "win32" && /^[A-Za-z]:/.test(normalizedPath)) {
-      const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, "$1:");
-      return `file:///${fixedPath}`;
-    }
-    return `file://${encodedPath}`;
+    return pathToFileUrl(this.convertPathForCurrentPlatform(path));
   }
   getCurrentPlatform() {
     return process.platform;
   }
   getCurrentUsername() {
-    const platform = this.getCurrentPlatform();
-    const vaultPath = this.getVaultPath();
-    if (platform === "darwin") {
-      const match = vaultPath.match(/^\/Users\/([^/]+)/);
-      if (match)
-        return match[1];
-    } else if (platform === "win32") {
-      const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
-      if (match)
-        return match[1];
+    try {
+      return (0, import_os2.userInfo)().username;
+    } catch (e) {
+      return "";
     }
-    return "";
   }
-  findMatchingComputer(path) {
+  /**
+   * The profile describing this machine. Identity is explicit rather than derived
+   * from the vault path: now that a library root can be any absolute path, the
+   * vault may well sit on a different volume than the home directory.
+   */
+  getCurrentComputer() {
+    return findCurrentComputer(
+      this.settings.computers,
+      this.getCurrentPlatform(),
+      this.getCurrentUsername()
+    );
+  }
+  /** Swaps the recording computer's library root for this one's. */
+  convertPathForCurrentPlatform(path) {
+    var _a;
     if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
-      return null;
+      return path;
     }
-    for (const computer of this.settings.computers) {
-      if (computer.platform === "darwin") {
-        const macPattern = `/Users/${computer.username}/`;
-        if (path.includes(macPattern)) {
-          return computer;
-        }
-      } else if (computer.platform === "win32") {
-        const winPattern = new RegExp(`^[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, "i");
-        if (winPattern.test(path)) {
-          return computer;
+    return (_a = remapPathToComputer(path, this.settings.computers, this.getCurrentComputer())) != null ? _a : path;
+  }
+  /**
+   * Imports a pasted/dropped file into Eagle and returns the canonical markdown
+   * to insert. The staging copy under `.eagle-temp/` is removed only after the
+   * original exists in Eagle at its complete byte size.
+   */
+  waitForImportedItem(itemId) {
+    return pollEagleItemInfo(itemId, {
+      timeoutMs: this.settings.connectionTimeout,
+      getItemInfo: (id) => this.api.getItemInfo(id)
+    });
+  }
+  waitForImportedOriginal(item) {
+    return pollEagleOriginalPath({
+      timeoutMs: this.settings.thumbnailPollTimeoutMs,
+      getOriginalFilePath: () => this.api.getOriginalFilePath(item),
+      isReady: async (absolutePath) => {
+        try {
+          const stats = await fsp.stat(absolutePath);
+          return stats.isFile() && stats.size === item.size;
+        } catch (e) {
+          return false;
         }
       }
-    }
-    console.log("[CMDS Eagle] No computer matched path:", path.substring(0, 50));
-    return null;
+    });
   }
-  convertPathForCurrentPlatform(path) {
-    if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
-      return path;
-    }
-    const sourceComputer = this.findMatchingComputer(path);
-    if (!sourceComputer) {
-      console.log("[CMDS Eagle] No matching computer found for path");
-      return path;
-    }
-    const currentPlatform = this.getCurrentPlatform();
-    const currentUsername = this.getCurrentUsername();
-    const currentComputer = this.settings.computers.find(
-      (c) => c.platform === currentPlatform && c.username === currentUsername
-    );
-    if (!currentComputer || sourceComputer.id === currentComputer.id) {
-      return path;
-    }
-    const sourceSubPath = sourceComputer.subPath || "";
-    const currentSubPath = currentComputer.subPath || "";
-    console.log(`[CMDS Eagle] Converting: ${sourceComputer.platform}/${sourceComputer.username}/${sourceSubPath} \u2192 ${currentComputer.platform}/${currentComputer.username}/${currentSubPath}`);
-    let relativePath = "";
-    if (sourceComputer.platform === "darwin") {
-      const sourceRoot = sourceSubPath ? `/Users/${sourceComputer.username}/${sourceSubPath}/` : `/Users/${sourceComputer.username}/`;
-      relativePath = path.replace(sourceRoot, "");
-    } else {
-      const subPathPart = sourceSubPath ? `[/\\\\]${sourceSubPath.replace(/[/\\]/g, "[/\\\\]")}` : "";
-      const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}${subPathPart}[/\\\\]`, "i");
-      relativePath = path.replace(winPattern, "").replace(/\\/g, "/");
-    }
-    if (currentComputer.platform === "darwin") {
-      const targetRoot = currentSubPath ? `/Users/${currentComputer.username}/${currentSubPath}/` : `/Users/${currentComputer.username}/`;
-      return `${targetRoot}${relativePath}`;
-    } else {
-      const targetRoot = currentSubPath ? `C:/Users/${currentComputer.username}/${currentSubPath}/` : `C:/Users/${currentComputer.username}/`;
-      return `${targetRoot}${relativePath}`;
-    }
-  }
-  async uploadImageToEagle(file) {
-    const tempPath = await this.saveToTempLocation(file);
+  async uploadImageToEagle(file, notePath) {
     const connected = await this.api.isConnected();
     if (!connected) {
       throw new Error("Eagle is not running");
     }
+    const temp = await this.saveToTempLocation(file);
     const filenameWithoutExt = file.name.replace(/\.[^.]+$/, "");
     const result = await this.api.addFromPath({
-      path: tempPath,
+      path: temp.absolutePath,
       name: filenameWithoutExt,
       folderId: this.settings.defaultFolder || void 0
     });
     if (!result.success || !result.itemId) {
-      throw new Error("Failed to add image to Eagle");
+      throw new Error(`Failed to add image to Eagle (staged copy kept at ${temp.vaultPath})`);
     }
-    await this.delay(1e3);
-    const thumbnailPath = await this.api.getThumbnailPath(result.itemId);
-    return thumbnailPath ? `file://${thumbnailPath}` : `file://${tempPath}`;
+    const item = await this.waitForImportedItem(result.itemId);
+    if (!item) {
+      throw new Error(`Eagle accepted the file but did not return item ${result.itemId} (staged copy kept at ${temp.vaultPath})`);
+    }
+    const originalFilePath = await this.waitForImportedOriginal(item);
+    if (!originalFilePath) {
+      throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready (staged copy kept at ${temp.vaultPath})`);
+    }
+    const markdown = await this.buildEmbedForItem(item, notePath, { originalFilePath });
+    await this.removeTempFile(temp);
+    return markdown;
+  }
+  /**
+   * The canonical embed for an Eagle item, in the shape `linkMode` asks for. The
+   * default copies the thumbnail into the vault and links it relative to the note,
+   * so the note renders on every device (absolute `file://` paths into
+   * cloud-synced storage break on reconnect and on other machines).
+   */
+  async buildEmbedForItem(item, notePath, options) {
+    var _a;
+    const mode = this.settings.linkMode;
+    const thumbnailRelativePath = modeNeedsThumbnail(mode) ? await this.materializeThumbnail(item, notePath) : null;
+    let fileUrl = null;
+    if (modeUsesOriginalFile(mode)) {
+      const filePath = (_a = options == null ? void 0 : options.originalFilePath) != null ? _a : await this.api.getOriginalFilePath(item);
+      fileUrl = filePath ? this.pathToFileUrl(filePath) : null;
+      if (!fileUrl) {
+        new import_obsidian5.Notice(`Could not resolve the original file for "${item.name}" \u2014 inserted a deep link instead`);
+      }
+    }
+    return buildCanonicalEmbed(
+      {
+        id: item.id,
+        name: item.name,
+        ext: item.ext,
+        size: item.size,
+        width: item.width,
+        height: item.height,
+        tags: item.tags
+      },
+      {
+        mode,
+        thumbnailRelativePath,
+        fileUrl,
+        hiddenTagPrefixes: this.settings.cardHiddenTagPrefixes,
+        normalizeTag: (tag) => this.normalizeTag(tag),
+        includeCard: options == null ? void 0 : options.includeCard
+      }
+    );
+  }
+  /**
+   * Copies the item's thumbnail into the vault and returns its note-relative
+   * path, or null when it cannot be obtained — in which case the caller renders
+   * a deep link. Never falls back to a machine-local path.
+   */
+  async materializeThumbnail(item, notePath) {
+    const source = await pollThumbnailPath(item.id, {
+      timeoutMs: this.settings.thumbnailPollTimeoutMs,
+      getThumbnailPath: (id) => this.api.getThumbnailPath(id)
+    });
+    if (!source) {
+      new import_obsidian5.Notice(`Eagle thumbnail not ready for "${item.name}" \u2014 inserted a deep link instead`);
+      return null;
+    }
+    const asset = await copyThumbnailToVault(this.app.vault, source, {
+      itemId: item.id,
+      assetsDir: this.settings.vaultThumbnailDir,
+      maxKB: this.settings.thumbnailMaxKB
+    });
+    if (!asset) {
+      new import_obsidian5.Notice(`Could not read the thumbnail for "${item.name}" (library may not be available locally) \u2014 inserted a deep link instead`);
+      return null;
+    }
+    if (asset.oversized) {
+      new import_obsidian5.Notice(`Thumbnail for "${item.name}" is ${asset.sizeKB} KB, above the ${this.settings.thumbnailMaxKB} KB limit`);
+    }
+    return toNoteRelativePath(notePath, asset.vaultPath);
   }
   async saveToTempLocation(file) {
-    const tempDir = ".eagle-temp";
-    const tempDirPath = `${tempDir}`;
+    const tempDirPath = TEMP_DIR;
     const adapter = this.app.vault.adapter;
     const tempDirExists = await adapter.exists(tempDirPath);
     if (!tempDirExists) {
@@ -3191,7 +3799,18 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     const buffer = await file.arrayBuffer();
     const uint8Array = new Uint8Array(buffer);
     await adapter.writeBinary(tempFilePath, uint8Array);
-    return this.getAbsolutePath(tempFilePath);
+    return { absolutePath: this.getAbsolutePath(tempFilePath), vaultPath: tempFilePath };
+  }
+  /** Eagle copies imports into its own library, so the staging file is redundant. */
+  async removeTempFile(temp) {
+    if (!this.settings.deleteTempAfterImport)
+      return;
+    try {
+      await this.app.vault.adapter.remove(temp.vaultPath);
+    } catch (error) {
+      console.error("[CMDS Eagle] Failed to remove staged copy:", temp.vaultPath, error);
+      new import_obsidian5.Notice(`Could not remove the staged copy at ${temp.vaultPath} \u2014 delete it manually`);
+    }
   }
   getVaultPath() {
     const adapter = this.app.vault.adapter;
@@ -3208,9 +3827,6 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       return relativePath;
     }
     return `${vaultPath}/${relativePath}`;
-  }
-  delay(ms) {
-    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
   allFilesAreImages(files) {
     if (!files || files.length === 0)
@@ -3235,6 +3851,51 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
     return true;
   }
+  async pathExists(absolutePath) {
+    try {
+      await fsp.stat(absolutePath);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  /**
+   * Rewrites the `file://` embeds of a note so they resolve on this computer.
+   * A target that is not on disk — an unmounted NAS — is left alone: writing an
+   * unreachable path into the note would outlive the disconnection, and the
+   * original at least still resolves on the machine that recorded it.
+   */
+  async rewriteNoteFileUrls(file) {
+    const content = await this.app.vault.read(file);
+    const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+    let newContent = content;
+    let converted = 0;
+    let skipped = 0;
+    let match;
+    while ((match = fileUrlRegex.exec(content)) !== null) {
+      const originalUrl = match[2];
+      const filePath = fileUrlToPath(originalUrl);
+      if (!filePath)
+        continue;
+      const convertedPath = remapPathToComputer(
+        filePath,
+        this.settings.computers,
+        this.getCurrentComputer()
+      );
+      if (!convertedPath)
+        continue;
+      if (!await this.pathExists(convertedPath)) {
+        skipped++;
+        continue;
+      }
+      newContent = newContent.replace(originalUrl, pathToFileUrl(convertedPath));
+      converted++;
+    }
+    if (converted > 0) {
+      await this.app.vault.modify(file, newContent);
+    }
+    return { converted, skipped };
+  }
   async convertCrossPlatformPaths() {
     if (!this.settings.enableCrossPlatform) {
       new import_obsidian5.Notice("Cross-platform sync is disabled in settings");
@@ -3245,56 +3906,44 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       new import_obsidian5.Notice("No active file");
       return;
     }
-    const content = await this.app.vault.read(activeFile);
-    let newContent = content;
-    let convertedCount = 0;
-    const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
-    let match;
-    while ((match = fileUrlRegex.exec(content)) !== null) {
-      const originalUrl = match[2];
-      let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ""));
-      if (filePath.startsWith("Users/") && !filePath.startsWith("/")) {
-        filePath = "/" + filePath;
-      }
-      if (this.isPathFromDifferentPlatform(filePath)) {
-        const convertedPath = this.convertPathForCurrentPlatform(filePath);
-        const newUrl = this.pathToFileUrl(convertedPath);
-        newContent = newContent.replace(originalUrl, newUrl);
-        convertedCount++;
-      }
-    }
-    if (convertedCount > 0) {
-      await this.app.vault.modify(activeFile, newContent);
-      new import_obsidian5.Notice(`Converted ${convertedCount} cross-platform image paths`);
+    const { converted, skipped } = await this.rewriteNoteFileUrls(activeFile);
+    if (converted > 0) {
+      new import_obsidian5.Notice(`Converted ${converted} cross-platform image paths`);
+    } else if (skipped > 0) {
+      new import_obsidian5.Notice(`${skipped} path(s) point at a library that is not mounted \u2014 left unchanged`);
     } else {
       new import_obsidian5.Notice("No cross-platform paths found to convert");
     }
   }
   async autoConvertOnFileOpen(file) {
-    const content = await this.app.vault.read(file);
-    let newContent = content;
-    let convertedCount = 0;
-    const fileUrlRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
-    let match;
-    while ((match = fileUrlRegex.exec(content)) !== null) {
-      const originalUrl = match[2];
-      let filePath = this.fullyDecodeUri(originalUrl.replace(/^file:\/\/\/?/, ""));
-      if (filePath.startsWith("Users/") && !filePath.startsWith("/")) {
-        filePath = "/" + filePath;
-      }
-      if (this.isPathFromDifferentPlatform(filePath)) {
-        const convertedPath = this.convertPathForCurrentPlatform(filePath);
-        const newUrl = this.pathToFileUrl(convertedPath);
-        newContent = newContent.replace(originalUrl, newUrl);
-        convertedCount++;
-      }
-    }
-    if (convertedCount > 0) {
-      await this.app.vault.modify(file, newContent);
-      new import_obsidian5.Notice(`Auto-converted ${convertedCount} cross-platform paths`);
+    const { converted, skipped } = await this.rewriteNoteFileUrls(file);
+    if (converted > 0) {
+      new import_obsidian5.Notice(`Auto-converted ${converted} cross-platform paths`);
+    } else if (skipped > 0) {
+      console.log(`[CMDS Eagle] Left ${skipped} path(s) unchanged \u2014 library not mounted`);
     }
   }
-  async convertCrossPlatformRenderOnly() {
+  /** Every element that can hold a rendered image, across reading view and live preview. */
+  activeViewContainers(view) {
+    return [
+      view.contentEl,
+      view.containerEl,
+      activeDocument.querySelector(".workspace-leaf.mod-active .view-content"),
+      activeDocument.querySelector(".workspace-leaf.mod-active .markdown-preview-view"),
+      activeDocument.querySelector(".workspace-leaf.mod-active .cm-content")
+    ].filter(Boolean);
+  }
+  convertRenderedImages(view) {
+    let convertedCount = 0;
+    for (const container of this.activeViewContainers(view)) {
+      container.querySelectorAll("img").forEach((img) => {
+        if (this.convertImageSrcForRendering(img))
+          convertedCount++;
+      });
+    }
+    return convertedCount;
+  }
+  convertCrossPlatformRenderOnly() {
     if (!this.settings.enableCrossPlatform) {
       new import_obsidian5.Notice("Cross-platform sync is disabled in settings");
       return;
@@ -3304,105 +3953,18 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       new import_obsidian5.Notice("No active markdown view");
       return;
     }
-    const allContainers = [
-      view.contentEl,
-      view.containerEl,
-      activeDocument.querySelector(".workspace-leaf.mod-active .view-content"),
-      activeDocument.querySelector(".workspace-leaf.mod-active .markdown-preview-view"),
-      activeDocument.querySelector(".workspace-leaf.mod-active .cm-content")
-    ].filter(Boolean);
-    let convertedCount = 0;
-    const processedSrcs = /* @__PURE__ */ new Set();
-    for (const container of allContainers) {
-      const images = container.querySelectorAll("img");
-      console.log(`[CMDS Eagle] Found ${images.length} images in container`);
-      images.forEach((img) => {
-        const src = img.getAttribute("src");
-        if (!src)
-          return;
-        if (processedSrcs.has(src))
-          return;
-        if (img.getAttribute("data-xplatform-converted"))
-          return;
-        console.log(`[CMDS Eagle] Processing image src: ${src.substring(0, 80)}`);
-        let extractedPath = null;
-        if (src.startsWith("app://")) {
-          const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
-          if (appMatch) {
-            extractedPath = this.fullyDecodeUri(appMatch[1]);
-            console.log(`[CMDS Eagle] Extracted from app://: ${extractedPath == null ? void 0 : extractedPath.substring(0, 60)}`);
-          }
-        } else if (src.startsWith("file://")) {
-          extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
-          console.log(`[CMDS Eagle] Extracted from file://: ${extractedPath == null ? void 0 : extractedPath.substring(0, 60)}`);
-        }
-        if (!extractedPath) {
-          console.log(`[CMDS Eagle] Could not extract path from: ${src.substring(0, 50)}`);
-          return;
-        }
-        if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
-          extractedPath = "/" + extractedPath;
-        }
-        if (!this.isPathFromDifferentPlatform(extractedPath)) {
-          console.log(`[CMDS Eagle] Path not from different platform`);
-          return;
-        }
-        const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
-        if (convertedPath !== extractedPath) {
-          const newSrc = this.pathToFileUrl(convertedPath);
-          console.log(`[CMDS Eagle] Converting: ${src.substring(0, 40)} \u2192 ${newSrc.substring(0, 40)}`);
-          img.setAttribute("src", newSrc);
-          img.setAttribute("data-xplatform-converted", "true");
-          img.setAttribute("data-original-src", src);
-          processedSrcs.add(src);
-          convertedCount++;
-        }
-      });
-    }
+    const convertedCount = this.convertRenderedImages(view);
     if (convertedCount > 0) {
       new import_obsidian5.Notice(`Render-only: converted ${convertedCount} image paths (source unchanged)`);
     } else {
       new import_obsidian5.Notice("No cross-platform paths found to convert");
     }
   }
-  async autoConvertRenderOnlyOnFileOpen() {
+  autoConvertRenderOnlyOnFileOpen() {
     const view = this.app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
     if (!view)
       return;
-    const contentEl = view.contentEl;
-    const images = contentEl.querySelectorAll("img");
-    let convertedCount = 0;
-    images.forEach((img) => {
-      const src = img.getAttribute("src");
-      if (!src)
-        return;
-      if (img.getAttribute("data-xplatform-converted"))
-        return;
-      let extractedPath = null;
-      if (src.startsWith("app://")) {
-        const appMatch = src.match(/^app:\/\/[^/]+\/(.+)$/);
-        if (appMatch) {
-          extractedPath = this.fullyDecodeUri(appMatch[1]);
-        }
-      } else if (src.startsWith("file://")) {
-        extractedPath = this.fullyDecodeUri(src.replace(/^file:\/\/\/?/, ""));
-      }
-      if (!extractedPath)
-        return;
-      if (extractedPath.startsWith("Users/") && !extractedPath.startsWith("/")) {
-        extractedPath = "/" + extractedPath;
-      }
-      if (!this.isPathFromDifferentPlatform(extractedPath))
-        return;
-      const convertedPath = this.convertPathForCurrentPlatform(extractedPath);
-      if (convertedPath !== extractedPath) {
-        const newSrc = this.pathToFileUrl(convertedPath);
-        img.setAttribute("src", newSrc);
-        img.setAttribute("data-xplatform-converted", "true");
-        img.setAttribute("data-original-src", src);
-        convertedCount++;
-      }
-    });
+    const convertedCount = this.convertRenderedImages(view);
     if (convertedCount > 0) {
       console.log(`[CMDS Eagle] Auto render-only: converted ${convertedCount} paths`);
     }

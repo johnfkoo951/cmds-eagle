@@ -3,7 +3,7 @@
 	"name": "CMDS Eagle",
 	"version": "1.7.1",
 	"minAppVersion": "1.5.0",
-	"description": "Connect Eagle asset library to your vault. Search, embed, and upload images to cloud (ImgHippo, R2, S3, WebDAV).",
+	"description": "Connect Eagle asset library to your vault: paste images straight into Eagle and keep only a vault-relative thumbnail plus an eagle:// link, or upload to cloud (ImgHippo, R2, S3, WebDAV).",
 	"author": "Yohan Koo",
 	"authorUrl": "https://github.com/johnfkoo951",
 	"isDesktopOnly": true

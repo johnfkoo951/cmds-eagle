@@ -1,16 +1,30 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
+import { userInfo } from 'os';
 import CMDSPACELinkEagle from './main';
 import { EagleApiService } from './api';
-import { 
-	CloudProviderType, 
+import {
+	CloudProviderType,
 	ImagePasteBehavior,
+	LinkMode,
 	SearchScope,
 	SUPPORTED_IMAGE_EXTENSIONS,
 	SUPPORTED_VIDEO_EXTENSIONS,
 	SUPPORTED_DOCUMENT_EXTENSIONS,
 	ComputerProfile,
+	CrossPlatformConversionMode,
 	PlatformType,
 } from './types';
+import { findCurrentComputer, isAbsolutePath, profileLibraryRoot } from './platform-paths';
+
+// Shown under the mode dropdown so the trade-off is visible at the point of choice.
+const LINK_MODE_DESCRIPTIONS: Record<LinkMode, string> = {
+	'photo-info': 'Thumbnail linked to Eagle, plus one line of metadata. Renders on every device.',
+	'photo-only': 'Thumbnail linked to Eagle, nothing else. Renders on every device.',
+	'link-only': 'Shows only the item name as an eagle:// hyperlink. Opens that item in Eagle without copying a file into the vault.',
+	'cmds-eagle': 'Embeds the original by absolute file:// path, plus one line of metadata. Renders on registered desktops that mount the library — never on mobile.',
+	'cmds-eagle-photo-only': 'Embeds only the original image by absolute file:// path, with no metadata line. Renders on registered desktops that mount the library — never on mobile.',
+	'cmds-eagle-photo-link': 'Embeds the original image as an eagle:// hyperlink. Clicking the image opens that item in Eagle.',
+};
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	plugin: CMDSPACELinkEagle;
@@ -69,16 +83,94 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Image paste/drop behavior').setHeading();
 
 		new Setting(containerEl)
-			.setName('Default image behavior')
-			.setDesc('What to do when pasting or dropping images')
+			.setName('Where to store images')
+			.setDesc('What to do with an image when you paste or drop it')
 			.addDropdown(dropdown => dropdown
+				.addOption('eagle', 'Import into Eagle (recommended)')
+				.addOption('local', 'Save to vault as an attachment')
+				.addOption('cloud', 'Upload to cloud provider')
 				.addOption('ask', 'Ask every time')
-				.addOption('eagle', 'Always upload to Eagle (local)')
-				.addOption('local', 'Always save to vault (local)')
-				.addOption('cloud', 'Always upload to cloud')
 				.setValue(this.plugin.settings.imagePasteBehavior)
 				.onChange(async (value: ImagePasteBehavior) => {
 					this.plugin.settings.imagePasteBehavior = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('What goes into the note')
+			.setDesc(LINK_MODE_DESCRIPTIONS[this.plugin.settings.linkMode])
+			.addDropdown(dropdown => dropdown
+				.addOption('photo-info', 'Photo + info — portable thumbnail')
+				.addOption('photo-only', 'Photo only — portable thumbnail')
+				.addOption('cmds-eagle', 'Original photo + info — registered desktops')
+				.addOption('cmds-eagle-photo-only', 'Original photo only — registered desktops')
+				.addOption('cmds-eagle-photo-link', 'Original photo linked to eagle — registered desktops')
+				.addOption('link-only', 'Eagle link only — hyperlink text')
+				.setValue(this.plugin.settings.linkMode)
+				.onChange(async (value: LinkMode) => {
+					this.plugin.settings.linkMode = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		new Setting(containerEl)
+			.setName('Thumbnail folder')
+			.setDesc('Vault folder that receives the copied thumbnails, named by Eagle item id. Originals stay in Eagle. Used by the photo modes.')
+			.addText(text => text
+				.setPlaceholder('attachments/eagle')
+				.setValue(this.plugin.settings.vaultThumbnailDir)
+				.onChange(async (value) => {
+					this.plugin.settings.vaultThumbnailDir = value.trim() || 'attachments/eagle';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Hidden tag prefixes in card')
+			.setDesc('Comma-separated tag prefixes to leave out of the metadata card — they exist for tooling, not for readers.')
+			.addText(text => text
+				.setPlaceholder('cli-eagle:, r2:')
+				.setValue(this.plugin.settings.cardHiddenTagPrefixes.join(', '))
+				.onChange(async (value) => {
+					this.plugin.settings.cardHiddenTagPrefixes = value
+						.split(',')
+						.map(prefix => prefix.trim())
+						.filter(Boolean);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Thumbnail wait timeout (ms)')
+			.setDesc('How long to wait for Eagle to generate a thumbnail before falling back to a plain deep link. Large files need more time.')
+			.addText(text => text
+				.setPlaceholder('10000')
+				.setValue(String(this.plugin.settings.thumbnailPollTimeoutMs))
+				.onChange(async (value) => {
+					const parsed = parseInt(value, 10);
+					this.plugin.settings.thumbnailPollTimeoutMs = Number.isFinite(parsed) && parsed > 0
+						? parsed
+						: 10000;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Thumbnail size warning (KB)')
+			.setDesc('Warn when a copied thumbnail exceeds this size. Eagle skips thumbnails for small images, so the original is copied instead. Warns only — never blocks.')
+			.addText(text => text
+				.setPlaceholder('2048')
+				.setValue(String(this.plugin.settings.thumbnailMaxKB))
+				.onChange(async (value) => {
+					const parsed = parseInt(value, 10);
+					this.plugin.settings.thumbnailMaxKB = Number.isFinite(parsed) && parsed > 0 ? parsed : 2048;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Remove staged copy after import')
+			.setDesc('Delete the file staged under .eagle-temp/ only after Eagle\'s copied original exists at its complete size. Turn off only when debugging.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.deleteTempAfterImport)
+				.onChange(async (value) => {
+					this.plugin.settings.deleteTempAfterImport = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -592,7 +684,17 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-
+		new Setting(containerEl)
+			.setName('Conversion mode')
+			.setDesc('Render-only remaps images as they are displayed and never edits the note — safe when several machines share the vault. Modify source rewrites the note itself.')
+			.addDropdown(dropdown => dropdown
+				.addOption('render-only', 'Render only (recommended)')
+				.addOption('modify-source', 'Modify note source')
+				.setValue(this.plugin.settings.crossPlatformConversionMode)
+				.onChange(async (value) => {
+					this.plugin.settings.crossPlatformConversionMode = value as CrossPlatformConversionMode;
+					await this.plugin.saveSettings();
+				}));
 
 		const currentPlatform = process.platform as PlatformType;
 		const currentUsername = this.detectCurrentUsername();
@@ -622,6 +724,12 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 						isCurrentComputer: true,
 					};
 
+					// The marker only disambiguates duplicate profiles for this OS account.
+					for (const profile of this.plugin.settings.computers) {
+						if (profile.platform === currentPlatform && profile.username === currentUsername) {
+							profile.isCurrentComputer = false;
+						}
+					}
 					this.plugin.settings.computers.push(newProfile);
 					await this.plugin.saveSettings();
 					this.display();
@@ -636,9 +744,15 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				cls: 'cmdspace-eagle-computer-list-title'
 			});
 
+			const currentComputer = findCurrentComputer(
+				this.plugin.settings.computers,
+				currentPlatform,
+				currentUsername
+			);
+
 			for (const computer of this.plugin.settings.computers) {
-				const isCurrentComputer = computer.platform === currentPlatform && computer.username === currentUsername;
-				
+				const isCurrentComputer = computer.id === currentComputer?.id;
+
 				const computerEl = listContainer.createDiv({ cls: 'cmdspace-eagle-computer-item' });
 				if (isCurrentComputer) {
 					computerEl.addClass('is-current');
@@ -659,24 +773,52 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 
 				const deleteBtn = headerRow.createEl('button', { text: '×', cls: 'cmdspace-eagle-computer-delete' });
 
-				const subPathContainer = computerEl.createDiv({ attr: { style: 'margin-top: 8px; width: 100%;' } });
-				subPathContainer.createEl('label', { 
-					text: 'Sub-path (folders between /Users/name/ and sync folder)',
+				const rootContainer = computerEl.createDiv({ attr: { style: 'margin-top: 8px; width: 100%;' } });
+				rootContainer.createEl('label', {
+					text: 'Eagle library root on this computer (absolute path)',
 					attr: { style: 'font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;' }
 				});
-				const subPathInput = subPathContainer.createEl('input', {
+				const rootInput = rootContainer.createEl('input', {
 					type: 'text',
-					value: computer.subPath || '',
-					placeholder: 'e.g., OneDrive or Dropbox/Work',
+					value: profileLibraryRoot(computer) || '',
+					placeholder: computer.platform === 'darwin'
+						? 'e.g., /Volumes/Assets/My Library.library'
+						: 'e.g., Z:\\My Library.library or \\\\NAS\\Assets\\My Library.library',
 					attr: { style: 'width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--background-modifier-border);' }
 				});
-				subPathInput.addEventListener('change', () => { void (async () => {
+				rootInput.addEventListener('change', () => { void (async () => {
+					const value = rootInput.value.trim();
+					if (value && !isAbsolutePath(value)) {
+						new Notice('Enter an absolute path: /Volumes/…, Z:\\… or \\\\NAS\\share\\…');
+						rootInput.value = profileLibraryRoot(computer) || '';
+						return;
+					}
 					const idx = this.plugin.settings.computers.findIndex(c => c.id === computer.id);
 					if (idx >= 0) {
-						this.plugin.settings.computers[idx].subPath = subPathInput.value.trim();
+						this.plugin.settings.computers[idx].eagleLibraryPath = value;
 						await this.plugin.saveSettings();
 					}
 				})(); });
+
+				const matchesRuntimeIdentity = computer.platform === currentPlatform
+					&& computer.username === currentUsername;
+				if (matchesRuntimeIdentity && !isCurrentComputer) {
+					const claimBtn = computerEl.createEl('button', {
+						text: 'Set as this computer',
+						attr: { style: 'margin-top: 8px; font-size: 11px;' }
+					});
+					claimBtn.addEventListener('click', () => { void (async () => {
+						for (const profile of this.plugin.settings.computers) {
+							if (profile.platform === currentPlatform && profile.username === currentUsername) {
+								profile.isCurrentComputer = profile.id === computer.id;
+							}
+						}
+						await this.plugin.saveSettings();
+						this.display();
+						new Notice(`Now treating "${computer.name}" as this computer`);
+					})(); });
+				}
+
 				deleteBtn.addEventListener('click', () => { void (async () => {
 					this.plugin.settings.computers = this.plugin.settings.computers.filter(c => c.id !== computer.id);
 					await this.plugin.saveSettings();
@@ -688,6 +830,12 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	}
 
 	private detectCurrentUsername(): string {
+		try {
+			return userInfo().username;
+		} catch {
+			// Fall back to the vault path for older desktop runtimes.
+		}
+
 		const adapter = this.app.vault.adapter as { basePath?: string };
 		const vaultPath = adapter.basePath || '';
 		const platform = String(process.platform);

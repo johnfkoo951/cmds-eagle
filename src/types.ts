@@ -84,7 +84,32 @@ export interface EagleApplicationInfo {
 	platform: string;
 }
 
+/** Where a pasted or dropped image is stored. */
 export type ImagePasteBehavior = 'eagle' | 'local' | 'cloud' | 'ask';
+
+/**
+ * What goes into the note for an Eagle item. Orthogonal to
+ * {@link ImagePasteBehavior}, which decides where the file is stored.
+ *
+ * | mode | note contains | works on other devices |
+ * |---|---|---|
+ * | `photo-info` | thumbnail + one-line card | yes |
+ * | `photo-only` | thumbnail | yes |
+ * | `link-only` | `eagle://` link, no file copied | yes |
+ * | `cmds-eagle` | absolute `file://` embed of the original + card | registered desktops |
+ * | `cmds-eagle-photo-only` | absolute `file://` embed of the original | registered desktops |
+ * | `cmds-eagle-photo-link` | original image linked to its `eagle://` item | registered desktops |
+ */
+export type LinkMode =
+	| 'photo-info'
+	| 'photo-only'
+	| 'link-only'
+	| 'cmds-eagle'
+	| 'cmds-eagle-photo-only'
+	| 'cmds-eagle-photo-link';
+
+/** Pre-release v2 values, folded into `imagePasteBehavior` + `linkMode` on load. */
+export type LegacyCaptureMode = 'eagle-thumbnail' | 'eagle-original-link' | 'local' | 'cloud' | 'ask';
 
 export type SearchScope = 'name' | 'tags' | 'annotation' | 'folders';
 
@@ -111,8 +136,11 @@ export interface ComputerProfile {
 	name: string;
 	platform: PlatformType;
 	username: string;
+	/** Legacy: folders between the home directory and the library. Superseded by `eagleLibraryPath`. */
 	subPath: string;
+	/** Absolute path this computer mounts the Eagle library at — `/Volumes/…`, `Z:\…` or `\\NAS\share\…`. */
 	eagleLibraryPath: string;
+	/** Fallback marker for duplicate profiles with the same runtime platform and username. */
 	isCurrentComputer?: boolean;
 }
 
@@ -190,6 +218,16 @@ export interface CMDSPACEEagleSettings {
 	embedImageInCard: boolean;
 	insertAsEmbed: boolean;
 	imagePasteBehavior: ImagePasteBehavior;
+	linkMode: LinkMode;
+	/** Pre-release v2 key — read once by the migration in `loadSettings`, then removed. */
+	captureMode?: LegacyCaptureMode;
+	/** Pre-release v2 key — folded into `linkMode` on load, then removed. */
+	insertMetadataCard?: boolean;
+	vaultThumbnailDir: string;
+	deleteTempAfterImport: boolean;
+	thumbnailPollTimeoutMs: number;
+	thumbnailMaxKB: number;
+	cardHiddenTagPrefixes: string[];
 	excalidrawIntegration: boolean;
 	excalidrawImportToEagle: boolean;
 	activeCloudProvider: CloudProviderType;
@@ -225,7 +263,13 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	imageDisplayMode: 'cloud',
 	embedImageInCard: true,
 	insertAsEmbed: true,
-	imagePasteBehavior: 'ask',
+	imagePasteBehavior: 'eagle',
+	linkMode: 'photo-info',
+	vaultThumbnailDir: 'attachments/eagle',
+	deleteTempAfterImport: true,
+	thumbnailPollTimeoutMs: 10000,
+	thumbnailMaxKB: 2048,
+	cardHiddenTagPrefixes: ['cli-eagle:', 'r2:'],
 	excalidrawIntegration: true,
 	excalidrawImportToEagle: true,
 	activeCloudProvider: 'imghippo',
@@ -278,7 +322,9 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	},
 	enableCrossPlatform: false,
 	autoConvertCrossPlatformPaths: false,
-	crossPlatformConversionMode: 'modify-source',
+	// Rewriting the note itself makes two machines take turns editing the same
+	// line, which a synced vault sees as a conflict. Remap at render time instead.
+	crossPlatformConversionMode: 'render-only',
 	computers: [],
 };
 

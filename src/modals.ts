@@ -14,16 +14,22 @@ import {
 	SUPPORTED_IMAGE_EXTENSIONS,
 	SUPPORTED_VIDEO_EXTENSIONS,
 	SUPPORTED_DOCUMENT_EXTENSIONS,
-	ComputerProfile,
-	PlatformType,
 } from './types';
 import { EagleApiService, buildEagleItemUrl } from './api';
 
 type FileTypeCategory = 'images' | 'videos' | 'documents' | 'all';
 
+export interface EagleSearchModalDeps {
+	api: EagleApiService;
+	settings: CMDSPACEEagleSettings;
+	/** Supplied by the plugin so search-insert and capture emit the same canonical form. */
+	buildEmbed: (item: EagleItem) => Promise<string>;
+}
+
 export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	private api: EagleApiService;
 	private settings: CMDSPACEEagleSettings;
+	private buildEmbed: (item: EagleItem) => Promise<string>;
 	private allItems: EagleItem[] = [];
 	private isLoading = false;
 	private activeScopes: Set<SearchScope>;
@@ -31,10 +37,12 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	private filterContainer: HTMLElement | null = null;
 	private libraryNameEl: HTMLElement | null = null;
 
-	constructor(app: App, api: EagleApiService, settings: CMDSPACEEagleSettings) {
+	constructor(app: App, deps: EagleSearchModalDeps) {
 		super(app);
+		const { api, settings } = deps;
 		this.api = api;
 		this.settings = settings;
+		this.buildEmbed = deps.buildEmbed;
 		this.activeScopes = new Set(settings.searchScope);
 		this.activeFileTypes = new Set(settings.searchFileTypes);
 		this.setPlaceholder('Search Eagle items...');
@@ -268,20 +276,9 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 		const editor = activeView.editor;
 		
 		if (this.settings.insertAsEmbed) {
-			const filePath = await this.api.getOriginalFilePath(item);
-			if (filePath) {
-				const fileUrl = this.pathToFileUrl(filePath);
-				const filename = `${item.name}.${item.ext}`;
-				let output = `![${filename}](${fileUrl})`;
-				
-				if (this.settings.insertThumbnail) {
-					output += '\n\n' + this.buildMetadataLine(item);
-				}
-				
-				editor.replaceSelection(output);
-				new Notice(`Embedded: ${item.name}`);
-				return;
-			}
+			editor.replaceSelection(await this.buildEmbed(item));
+			new Notice(`Embedded: ${item.name}`);
+			return;
 		}
 
 		const linkUrl = buildEagleItemUrl(item.id);
@@ -300,109 +297,6 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 		}
 
 		new Notice(`Inserted link to: ${item.name}`);
-	}
-
-	private pathToFileUrl(path: string): string {
-		let decodedPath = path;
-		try {
-			while (decodedPath.includes('%')) {
-				const decoded = decodeURIComponent(decodedPath);
-				if (decoded === decodedPath) break;
-				decodedPath = decoded;
-			}
-		} catch {
-			decodedPath = path;
-		}
-
-		const convertedPath = this.convertPathForCurrentPlatform(decodedPath);
-		const normalizedPath = convertedPath.replace(/\\/g, '/');
-		const encodedPath = normalizedPath.split('/').map(segment => encodeURIComponent(segment)).join('/');
-		
-		const platform = process.platform as PlatformType;
-		if (platform === 'win32' && /^[A-Za-z]:/.test(normalizedPath)) {
-			const fixedPath = encodedPath.replace(/^([A-Za-z])%3A/, '$1:');
-			return `file:///${fixedPath}`;
-		}
-		return `file://${encodedPath}`;
-	}
-
-	private convertPathForCurrentPlatform(path: string): string {
-		if (!this.settings.enableCrossPlatform || this.settings.computers.length === 0) {
-			return path;
-		}
-
-		const sourceComputer = this.findMatchingComputer(path);
-		if (!sourceComputer) {
-			return path;
-		}
-
-		const currentPlatform = process.platform as PlatformType;
-		const currentUsername = this.detectCurrentUsername();
-
-		const currentComputer = this.settings.computers.find(
-			c => c.platform === currentPlatform && c.username === currentUsername
-		);
-
-		if (!currentComputer || sourceComputer.id === currentComputer.id) {
-			return path;
-		}
-
-		let relativePath = '';
-		if (sourceComputer.platform === 'darwin') {
-			relativePath = path.replace(`/Users/${sourceComputer.username}/`, '');
-		} else {
-			const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${sourceComputer.username}[/\\\\]`, 'i');
-			relativePath = path.replace(winPattern, '').replace(/\\/g, '/');
-		}
-
-		if (currentComputer.platform === 'darwin') {
-			return `/Users/${currentComputer.username}/${relativePath}`;
-		} else {
-			return `C:/Users/${currentComputer.username}/${relativePath}`;
-		}
-	}
-
-	private findMatchingComputer(path: string): ComputerProfile | null {
-		for (const computer of this.settings.computers) {
-			if (computer.platform === 'darwin') {
-				if (path.includes(`/Users/${computer.username}/`)) {
-					return computer;
-				}
-			} else if (computer.platform === 'win32') {
-				const winPattern = new RegExp(`[A-Za-z]:[/\\\\]Users[/\\\\]${computer.username}[/\\\\]`, 'i');
-				if (winPattern.test(path)) {
-					return computer;
-				}
-			}
-		}
-		return null;
-	}
-
-	private detectCurrentUsername(): string {
-		const adapter = this.app.vault.adapter as { basePath?: string };
-		const vaultPath = adapter.basePath || '';
-		const platform = String(process.platform);
-
-		if (platform === 'darwin') {
-			const match = vaultPath.match(/^\/Users\/([^/]+)/);
-			if (match) return match[1];
-		} else if (platform === 'win32') {
-			const match = vaultPath.match(/^[A-Za-z]:[/\\]Users[/\\]([^/\\]+)/i);
-			if (match) return match[1];
-		}
-
-		return '';
-	}
-
-	private buildMetadataLine(item: EagleItem): string {
-		const linkUrl = buildEagleItemUrl(item.id);
-		const tags = item.tags
-			.filter(t => !t.startsWith('r2:') && t !== 'r2-cloud' && t !== 'cloud-upload')
-			.map(t => `#${this.normalizeTag(t)}`)
-			.join(' ');
-		const dimensions = item.width && item.height ? `${item.width}×${item.height}` : '';
-
-		return `> **${item.ext.toUpperCase()}** | ${this.formatFileSize(item.size)}${dimensions ? ` | ${dimensions}` : ''} | ${tags || 'No tags'} | [Eagle](${linkUrl})`;
 	}
 
 	private buildLinkCard(item: EagleItem): string {
@@ -538,6 +432,65 @@ export class ImagePasteChoiceModal extends Modal {
 	}
 
 	getResponse(): Promise<ImagePasteChoiceResponse> {
+		return new Promise((resolve) => {
+			this.resolvePromise = resolve;
+		});
+	}
+}
+
+/**
+ * Confirmation gate for actions that move files out of the vault. The vault
+ * backfill is reversible (originals go to the system trash) but not silent —
+ * the user sees the count and total size before anything moves.
+ */
+export interface ConfirmActionOptions {
+	title: string;
+	body: string;
+	confirmLabel?: string;
+}
+
+export class ConfirmActionModal extends Modal {
+	private confirmed = false;
+	private resolvePromise?: (value: boolean) => void;
+	private title: string;
+	private body: string;
+	private confirmLabel: string;
+
+	constructor(app: App, options: ConfirmActionOptions) {
+		super(app);
+		this.title = options.title;
+		this.body = options.body;
+		this.confirmLabel = options.confirmLabel ?? 'Continue';
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl('h2', { text: this.title });
+		contentEl.createEl('p', { text: this.body });
+
+		new Setting(contentEl)
+			.addButton(button => button
+				.setButtonText('Cancel')
+				.onClick(() => this.close()))
+			.addButton(button => button
+				.setButtonText(this.confirmLabel)
+				.setCta()
+				.onClick(() => {
+					this.confirmed = true;
+					this.close();
+				}));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (this.resolvePromise) {
+			this.resolvePromise(this.confirmed);
+		}
+	}
+
+	getResponse(): Promise<boolean> {
 		return new Promise((resolve) => {
 			this.resolvePromise = resolve;
 		});
