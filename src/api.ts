@@ -7,8 +7,10 @@ import {
 	EagleLibraryInfo,
 	EagleApplicationInfo,
 	CMDSPACEEagleSettings,
+	LibrarySwitchResult,
 	R2UploadResult,
 } from './types';
+import { libraryNameFromPath } from './eagle-library';
 
 export class EagleApiService {
 	private baseUrl: string;
@@ -209,6 +211,107 @@ export class EagleApiService {
 		return path.split('/').pop()?.replace('.library', '') || null;
 	}
 
+	/** Library paths Eagle has opened before, including the one open right now. */
+	async listLibraryHistory(): Promise<string[]> {
+		try {
+			const response = await this.get<string[]>('/api/library/history');
+			return response.data ?? [];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * The library Eagle currently has open. Reads `data.library` directly, which
+	 * carries both the path and Eagle's own display name — unlike
+	 * {@link getLibraryName}, which has to guess the name from the path.
+	 */
+	async getActiveLibrary(): Promise<{ path: string; name: string } | null> {
+		try {
+			const response = await this.get<{ library?: { path?: string; name?: string } }>('/api/library/info');
+			const library = response.data?.library;
+			if (!library?.path) return null;
+			return {
+				path: library.path,
+				name: library.name || libraryNameFromPath(library.path),
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Switch Eagle to another library and wait until it is actually open.
+	 *
+	 * Two behaviours here are undocumented and were established by probing a live
+	 * Eagle 4.0.0 — do not "simplify" the polling away:
+	 *
+	 *   1. The POST returns `{"status":"success"}` in ~40ms, but that means
+	 *      ACCEPTED, not LOADED. The library reports as open ~900ms later.
+	 *   2. The HTTP server goes down for 200-400ms mid-switch, so requests fail
+	 *      with ECONNREFUSED and `requestUrl` throws. That is the normal path
+	 *      through this function, which is why every poll error is swallowed.
+	 */
+	async switchLibrary(
+		libraryPath: string,
+		options?: { timeoutMs?: number; pollIntervalMs?: number }
+	): Promise<LibrarySwitchResult> {
+		const timeoutMs = options?.timeoutMs ?? 15000;
+		const pollIntervalMs = options?.pollIntervalMs ?? 200;
+		const target = normalizeLibraryPath(libraryPath);
+
+		const current = await this.getActiveLibrary();
+		if (current && normalizeLibraryPath(current.path) === target) {
+			return { success: true, activePath: current.path, elapsedMs: 0 };
+		}
+
+		const startedAt = Date.now();
+		try {
+			await this.post<null>('/api/library/switch', { libraryPath });
+		} catch {
+			// The server may already be tearing down for the switch. Poll anyway —
+			// treating this as fatal would abort switches that actually succeeded.
+		}
+
+		let lastSeen: string | null = current?.path ?? null;
+		while (Date.now() - startedAt < timeoutMs) {
+			await delay(pollIntervalMs);
+			try {
+				const active = await this.getActiveLibrary();
+				if (active) {
+					lastSeen = active.path;
+					if (normalizeLibraryPath(active.path) === target) {
+						return { success: true, activePath: active.path, elapsedMs: Date.now() - startedAt };
+					}
+				}
+			} catch {
+				// ECONNREFUSED while Eagle restarts its API server. Keep waiting.
+			}
+		}
+
+		return {
+			success: false,
+			activePath: lastSeen,
+			elapsedMs: Date.now() - startedAt,
+			error: `Eagle did not open "${libraryPath}" within ${timeoutMs}ms`,
+		};
+	}
+
+	/**
+	 * Create a folder in the current library. `parent` nests it under an existing
+	 * folder (supported since Eagle 2.0 Build28); omitting it creates at the root.
+	 */
+	async createFolder(folderName: string, parent?: string): Promise<EagleFolder | null> {
+		try {
+			const body: { folderName: string; parent?: string } = { folderName };
+			if (parent) body.parent = parent;
+			const response = await this.post<EagleFolder>('/api/folder/create', body);
+			return response.status === 'success' ? response.data ?? null : null;
+		} catch {
+			return null;
+		}
+	}
+
 	async refreshThumbnail(id: string): Promise<boolean> {
 		try {
 			const response = await this.post<null>('/api/item/refreshThumbnail', { id });
@@ -378,6 +481,15 @@ export class EagleApiService {
 		});
 		return response.json as EagleApiResponse<T>;
 	}
+}
+
+/** Trailing slashes vary by source; macOS paths are case-preserving so case is kept. */
+function normalizeLibraryPath(path: string): string {
+	return path.replace(/[/\\]+$/, '');
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 export function buildEagleItemUrl(itemId: string): string {

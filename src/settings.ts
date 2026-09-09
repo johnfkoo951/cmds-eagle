@@ -5,6 +5,8 @@ import { EagleApiService } from './api';
 import {
 	CloudProviderType,
 	ImagePasteBehavior,
+	LibraryTargetMode,
+	FolderTargetMode,
 	LinkMode,
 	SearchScope,
 	SUPPORTED_IMAGE_EXTENSIONS,
@@ -25,6 +27,8 @@ const LINK_MODE_DESCRIPTIONS: Record<LinkMode, string> = {
 	'cmds-eagle-photo-only': 'Embeds only the original image by absolute file:// path, with no metadata line. Renders on registered desktops that mount the library — never on mobile.',
 	'cmds-eagle-photo-link': 'Embeds the original image as an eagle:// hyperlink. Clicking the image opens that item in Eagle.',
 };
+
+const SCAN_EAGLE_LABEL = 'Scan Eagle';
 
 export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	plugin: CMDSPACELinkEagle;
@@ -79,6 +83,129 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 						new Notice('✗ Failed to connect to Eagle. Make sure Eagle is running.');
 					}
 				}));
+
+		new Setting(containerEl).setName('Eagle libraries').setHeading();
+
+		containerEl.createEl('div', {
+			cls: 'setting-item-description cmds-eagle-info-block',
+			text: 'Eagle opens one library at a time. Importing into another library switches the app to it and, when switch back is enabled, switches back afterward, taking about a second each way.'
+		});
+
+		new Setting(containerEl)
+			.setName('Target library')
+			.addDropdown(dropdown => dropdown
+				.addOption('active', 'Currently open library')
+				.addOption('default', 'Always a specific library')
+				.addOption('ask', 'Ask every time')
+				.setValue(this.plugin.settings.libraryTargetMode)
+				.onChange(async (value: LibraryTargetMode) => {
+					this.plugin.settings.libraryTargetMode = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
+
+		if (this.plugin.settings.libraryTargetMode === 'default') {
+			new Setting(containerEl)
+				.setName('Default library')
+				.addDropdown(dropdown => {
+					if (this.plugin.settings.libraries.length === 0) {
+						dropdown.addOption('', 'No libraries detected yet').setDisabled(true);
+					} else {
+						for (const profile of this.plugin.settings.libraries) {
+							dropdown.addOption(profile.path, profile.name);
+						}
+						dropdown.setValue(this.plugin.settings.defaultLibraryPath);
+					}
+					dropdown.onChange(async (value) => {
+						this.plugin.settings.defaultLibraryPath = value;
+						await this.plugin.saveSettings();
+					});
+				});
+		}
+
+		new Setting(containerEl)
+			.setName('Target folder')
+			.addDropdown(dropdown => dropdown
+				.addOption('library-default', 'Each library\'s default folder')
+				.addOption('ask', 'Ask every time')
+				.addOption('none', 'Library root')
+				.setValue(this.plugin.settings.folderTargetMode)
+				.onChange(async (value: FolderTargetMode) => {
+					this.plugin.settings.folderTargetMode = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Switch back after import')
+			.setDesc('Eagle returns to the library you had open.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.restoreLibraryAfterImport)
+				.onChange(async (value) => {
+					this.plugin.settings.restoreLibraryAfterImport = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Library switch timeout')
+			.setDesc('Timeout in milliseconds (minimum 1000). A switch normally completes in about a second.')
+			.addText(text => text
+				.setValue(this.plugin.settings.librarySwitchTimeoutMs.toString())
+				.onChange(async (value) => {
+					const timeout = Number.parseInt(value, 10);
+					if (Number.isNaN(timeout) || timeout < 1000) return;
+					this.plugin.settings.librarySwitchTimeoutMs = timeout;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Detect libraries')
+			.addButton(button => button
+				.setButtonText(SCAN_EAGLE_LABEL)
+				.onClick(async () => {
+					button.setDisabled(true).setButtonText('Scanning…');
+					try {
+						const count = await this.plugin.detectLibraries();
+						new Notice(`Known libraries: ${count}`);
+						this.display();
+					} catch (error) {
+						console.error('Failed to detect libraries:', error);
+						new Notice('Eagle library detection failed. Check that the app is running.');
+					} finally {
+						button.setDisabled(false).setButtonText(SCAN_EAGLE_LABEL);
+					}
+				}));
+
+		for (const profile of this.plugin.settings.libraries) {
+			const description = createFragment(fragment => {
+				fragment.createDiv({ text: `Default folder: ${profile.defaultFolderPath || 'library root'}` });
+				fragment.createDiv({ text: profile.path, cls: 'setting-item-description' });
+			});
+			const librarySetting = new Setting(containerEl)
+				.setName(profile.name)
+				.setDesc(description)
+				.addButton(button => button
+					.setButtonText('Choose folder')
+					.onClick(async () => {
+						await this.plugin.setDefaultFolderForLibrary(profile.path);
+						this.display();
+					}));
+			if (profile.defaultFolderId) {
+				librarySetting.addExtraButton(button => button
+					.setIcon('x')
+					.setTooltip('Clear default folder')
+					.onClick(async () => {
+						await this.plugin.clearDefaultFolderForLibrary(profile.path);
+						this.display();
+					}));
+			}
+		}
+
+		if (this.plugin.settings.libraries.length === 0) {
+			containerEl.createDiv({
+				cls: 'setting-item-description cmds-eagle-info-block',
+				text: 'No libraries have been detected yet. Press Scan Eagle to find them.'
+			});
+		}
 
 		new Setting(containerEl).setName('Image paste/drop behavior').setHeading();
 

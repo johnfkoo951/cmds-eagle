@@ -146,6 +146,63 @@ export interface ComputerProfile {
 
 export type CrossPlatformConversionMode = 'modify-source' | 'render-only';
 
+/**
+ * A remembered Eagle library. Eagle opens exactly one library at a time, so
+ * targeting another one means switching to it and switching back.
+ */
+export interface EagleLibraryProfile {
+	/** Absolute path to the `.library` bundle. This is the identity key. */
+	path: string;
+	/** Display name, as reported by `library.name`. */
+	name: string;
+	/** Folder new items land in. Folder ids are scoped to their library. */
+	defaultFolderId: string;
+	/**
+	 * Human-readable folder path (`Inbox`, `Projects/Jazz Blend`). Kept alongside
+	 * the id so a deleted or re-created folder can be re-resolved by name, and so
+	 * the settings UI can say which folder went missing instead of showing an id.
+	 */
+	defaultFolderPath: string;
+}
+
+/** Which library an import targets. */
+export type LibraryTargetMode =
+	/** Whatever Eagle currently has open — never switches. */
+	| 'active'
+	/** A fixed library from the profile list; switches if it is not already open. */
+	| 'default'
+	/** Prompt for the library on every import. */
+	| 'ask';
+
+/** Which folder inside the target library an import lands in. */
+export type FolderTargetMode =
+	/** The target library's own `defaultFolderId`. */
+	| 'library-default'
+	/** Prompt for the folder on every import. */
+	| 'ask'
+	/** Library root, as before. */
+	| 'none';
+
+/** A folder flattened out of Eagle's nested tree, carrying its full display path. */
+export interface FlatEagleFolder {
+	id: string;
+	name: string;
+	/** Ancestors joined with `/` — `Projects/Jazz Blend`. */
+	path: string;
+	depth: number;
+	imageCount: number;
+}
+
+/** Outcome of a library switch, which is asynchronous and briefly kills the API server. */
+export interface LibrarySwitchResult {
+	success: boolean;
+	/** Library actually open when the attempt finished. */
+	activePath: string | null;
+	/** Milliseconds from request to the library reporting as open. */
+	elapsedMs: number;
+	error?: string;
+}
+
 export interface CloudProviderConfig {
 	type: CloudProviderType;
 	enabled: boolean;
@@ -244,6 +301,16 @@ export interface CMDSPACEEagleSettings {
 	autoConvertCrossPlatformPaths: boolean;
 	crossPlatformConversionMode: CrossPlatformConversionMode;
 	computers: ComputerProfile[];
+	/** Remembered libraries and their per-library default folder. */
+	libraries: EagleLibraryProfile[];
+	libraryTargetMode: LibraryTargetMode;
+	/** Path of the library used when `libraryTargetMode` is `default`. */
+	defaultLibraryPath: string;
+	/** Switch back to the previously open library once the import finishes. */
+	restoreLibraryAfterImport: boolean;
+	/** Give up waiting for a switched-to library to report as open. */
+	librarySwitchTimeoutMs: number;
+	folderTargetMode: FolderTargetMode;
 }
 
 export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
@@ -320,6 +387,14 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 			publicUrl: '',
 		},
 	},
+	// Defaults reproduce the pre-1.8 behaviour exactly: import into whatever
+	// library Eagle has open, at its root. Multi-library targeting is opt-in.
+	libraries: [],
+	libraryTargetMode: 'active',
+	defaultLibraryPath: '',
+	restoreLibraryAfterImport: true,
+	librarySwitchTimeoutMs: 15000,
+	folderTargetMode: 'library-default',
 	enableCrossPlatform: false,
 	autoConvertCrossPlatformPaths: false,
 	// Rewriting the note itself makes two machines take turns editing the same

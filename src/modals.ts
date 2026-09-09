@@ -9,6 +9,8 @@ import {
 } from 'obsidian';
 import { 
 	EagleItem,
+	FlatEagleFolder,
+	EagleLibraryProfile,
 	CMDSPACEEagleSettings,
 	SearchScope,
 	SUPPORTED_IMAGE_EXTENSIONS,
@@ -336,31 +338,153 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	}
 }
 
-export class EagleFolderModal extends FuzzySuggestModal<{ id: string; name: string; path: string }> {
-	private folders: { id: string; name: string; path: string }[] = [];
-	private onSelect: (folderId: string) => void;
+const ROOT_LABEL = '(Library root)';
+
+export interface FolderChoice {
+	kind: 'folder' | 'create';
+	/** Empty for the library root. */
+	folderId: string;
+	/** Display path, e.g. 'Projects/Jazz Blend'. Empty for root. */
+	folderPath: string;
+	/** For kind 'create': the parent to create under, and the typed name. */
+	parentId?: string;
+	newFolderName?: string;
+}
+
+export class EagleFolderModal extends FuzzySuggestModal<FolderChoice> {
+	private folders: FlatEagleFolder[];
+	private onSelect: (choice: FolderChoice) => void;
+	private allowCreate: boolean;
+	private allowRoot: boolean;
 
 	constructor(
 		app: App,
-		folders: { id: string; name: string; path: string }[],
-		onSelect: (folderId: string) => void
+		folders: FlatEagleFolder[],
+		onChoose: (choice: FolderChoice) => void,
+		options?: { allowCreate?: boolean; allowRoot?: boolean; title?: string }
 	) {
 		super(app);
 		this.folders = folders;
-		this.onSelect = onSelect;
-		this.setPlaceholder('Select Eagle folder...');
+		this.onSelect = onChoose;
+		this.allowCreate = options?.allowCreate ?? true;
+		this.allowRoot = options?.allowRoot ?? true;
+		this.setPlaceholder(options?.title ?? 'Select Eagle folder…');
 	}
 
-	getItems(): { id: string; name: string; path: string }[] {
-		return this.folders;
+	getItems(): FolderChoice[] {
+		const choices: FolderChoice[] = this.folders.map(folder => ({
+			kind: 'folder',
+			folderId: folder.id,
+			folderPath: folder.path,
+		}));
+		if (this.allowRoot) {
+			choices.unshift({ kind: 'folder', folderId: '', folderPath: '' });
+		}
+		const query = this.inputEl.value.trim();
+		if (!this.allowCreate || !query || this.folders.some(folder => folder.path === query)) {
+			return choices;
+		}
+		const separatorIndex = query.lastIndexOf('/');
+		const newFolderName = query.slice(separatorIndex + 1).trim();
+		const parentPath = query.slice(0, separatorIndex);
+		const parent = separatorIndex >= 0 ? this.folders.find(folder => folder.path === parentPath) : undefined;
+		if (!newFolderName || (separatorIndex >= 0 && !parent)) {
+			return choices;
+		}
+		choices.push({
+			kind: 'create',
+			folderId: '',
+			folderPath: parent ? `${parent.path}/${newFolderName}` : newFolderName,
+			parentId: parent?.id ?? '',
+			newFolderName,
+		});
+		return choices;
 	}
 
-	getItemText(item: { id: string; name: string; path: string }): string {
-		return item.path;
+	getItemText(item: FolderChoice): string {
+		if (item.kind === 'create') {
+			return `Create folder "${this.inputEl.value.trim()}"`;
+		}
+		// The root has no path, and an empty string fuzzy-matches nothing — it would
+		// vanish from the list the moment the user typed anything.
+		return item.folderPath || ROOT_LABEL;
 	}
 
-	onChooseItem(item: { id: string; name: string; path: string }): void {
-		this.onSelect(item.id);
+	renderSuggestion(match: FuzzyMatch<FolderChoice>, el: HTMLElement): void {
+		const item = match.item;
+		const container = el.createDiv({ cls: 'cmdspace-eagle-suggestion' });
+		const infoDiv = container.createDiv({ cls: 'cmdspace-eagle-suggestion-info' });
+		infoDiv.createDiv({
+			cls: 'cmdspace-eagle-suggestion-name',
+			text: item.kind === 'create' ? this.getItemText(item) : item.folderPath || ROOT_LABEL,
+		});
+		const folder = item.kind === 'folder' ? this.folders.find(folder => folder.id === item.folderId) : undefined;
+		if (folder) {
+			infoDiv.createDiv({ cls: 'cmdspace-eagle-suggestion-meta', text: `${folder.imageCount} items` });
+		}
+	}
+
+	onChooseItem(item: FolderChoice): void {
+		this.onSelect(item);
+	}
+
+	/**
+	 * Called after the modal closes, including dismissal with no selection, so a
+	 * caller awaiting a choice can settle its promise instead of leaking it.
+	 */
+	onClosed?: () => void;
+
+	onClose(): void {
+		super.onClose();
+		this.onClosed?.();
+	}
+}
+
+export class EagleLibraryModal extends FuzzySuggestModal<EagleLibraryProfile> {
+	private libraries: EagleLibraryProfile[];
+	private activePath: string;
+	private onSelect: (library: EagleLibraryProfile) => void;
+
+	constructor(app: App, libraries: EagleLibraryProfile[], activePath: string, onChoose: (library: EagleLibraryProfile) => void) {
+		super(app);
+		this.libraries = libraries;
+		this.activePath = activePath;
+		this.onSelect = onChoose;
+		this.setPlaceholder('Switch Eagle library…');
+	}
+
+	getItems(): EagleLibraryProfile[] {
+		return this.libraries;
+	}
+
+	getItemText(item: EagleLibraryProfile): string {
+		return item.name;
+	}
+
+	renderSuggestion(match: FuzzyMatch<EagleLibraryProfile>, el: HTMLElement): void {
+		const library = match.item;
+		const container = el.createDiv({ cls: 'cmdspace-eagle-suggestion' });
+		const infoDiv = container.createDiv({ cls: 'cmdspace-eagle-suggestion-info' });
+		const nameDiv = infoDiv.createDiv({ cls: 'cmdspace-eagle-suggestion-name', text: library.name });
+		if (library.path === this.activePath) {
+			nameDiv.createSpan({ cls: 'cmdspace-eagle-suggestion-meta', text: ' · open now' });
+		}
+		infoDiv.createDiv({ cls: 'cmdspace-eagle-suggestion-meta', text: library.path });
+	}
+
+	onChooseItem(item: EagleLibraryProfile): void {
+		this.onSelect(item);
+	}
+
+	/**
+	 * Called after the modal closes, including dismissal with no selection, so a
+	 * caller awaiting a choice can settle its promise instead of leaking it.
+	 */
+	onClosed?: () => void;
+
+	onClose(): void {
+		super.onClose();
+		this.onClosed?.();
 	}
 }
 

@@ -15,9 +15,18 @@ import {
 	DEFAULT_SETTINGS,
 	EagleItem,
 	ComputerProfile,
+	EagleLibraryProfile,
+	FlatEagleFolder,
 	PlatformType,
 	SUPPORTED_IMAGE_EXTENSIONS,
 } from './types';
+import {
+	flattenFolders,
+	libraryNameFromPath,
+	libraryProfileFor,
+	resolveDefaultFolder,
+	upsertLibraryProfile,
+} from './eagle-library';
 import {
 	buildCanonicalEmbed,
 	modeNeedsThumbnail,
@@ -45,7 +54,14 @@ import {
 	parseEagleLocalhostUrl,
 	isEagleLocalhostUrl,
 } from './api';
-import { ConfirmActionModal, EagleSearchModal, ImagePasteChoiceModal } from './modals';
+import {
+	ConfirmActionModal,
+	EagleFolderModal,
+	EagleLibraryModal,
+	EagleSearchModal,
+	ImagePasteChoiceModal,
+	type FolderChoice,
+} from './modals';
 import { CMDSPACEEagleSettingTab } from './settings';
 import { createCloudProvider, getMimeType, getExtFromFilename, CloudProvider } from './cloud-providers';
 
@@ -85,6 +101,28 @@ export default class CMDSPACELinkEagle extends Plugin {
 			name: 'Search Eagle library and embed',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
 				this.openSearchModal();
+			},
+		});
+
+		this.addCommand({
+			id: 'switch-eagle-library',
+			name: 'Switch Eagle library',
+			callback: async () => {
+				await this.switchLibraryCommand();
+			},
+		});
+
+		this.addCommand({
+			id: 'set-eagle-default-folder',
+			name: 'Set default Eagle folder for the open library',
+			callback: async () => {
+				const active = await this.api.getActiveLibrary();
+				if (!active) {
+					new Notice('Eagle is not running');
+					return;
+				}
+				await this.profileForActiveLibrary();
+				await this.setDefaultFolderForLibrary(active.path);
 			},
 		});
 
@@ -271,6 +309,331 @@ export default class CMDSPACELinkEagle extends Plugin {
 		delete this.settings.insertMetadataCard;
 		await this.saveSettings();
 		console.log(`[CMDS Eagle] Migrated captureMode="${legacy}" to imagePasteBehavior="${this.settings.imagePasteBehavior}" + linkMode="${this.settings.linkMode}"`);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Import targeting: which library, and which folder inside it.
+	//
+	// Eagle opens one library at a time, so targeting another one means switching
+	// to it and switching back — see EagleApiService.switchLibrary for the timing
+	// facts. Folder ids are library-scoped, so every library carries its own
+	// default folder in its EagleLibraryProfile.
+	// ---------------------------------------------------------------------------
+
+	/** Flattened folder tree of the library that is open right now. */
+	private async getFlatFolders(): Promise<FlatEagleFolder[]> {
+		return flattenFolders(await this.api.listFolders());
+	}
+
+	/**
+	 * The profile for the open library, creating one on first sight. Also absorbs
+	 * the pre-1.8 single `defaultFolder` setting, which had no UI and so was only
+	 * ever set by hand — it belongs to whichever library was open at the time.
+	 */
+	private async profileForActiveLibrary(): Promise<EagleLibraryProfile | null> {
+		const active = await this.api.getActiveLibrary();
+		if (!active) return null;
+
+		let profile = libraryProfileFor(this.settings.libraries, active.path);
+		if (!profile) {
+			profile = {
+				path: active.path,
+				name: active.name || libraryNameFromPath(active.path),
+				defaultFolderId: this.settings.defaultFolder || '',
+				defaultFolderPath: '',
+			};
+			this.settings.libraries = upsertLibraryProfile(this.settings.libraries, profile);
+			if (this.settings.defaultFolder) {
+				this.settings.defaultFolder = '';
+			}
+			await this.saveSettings();
+		}
+		return profile;
+	}
+
+	/**
+	 * The folder id an import should use for `profile`, repairing the stored id
+	 * when the folder was deleted and re-created under the same path.
+	 */
+	private async resolveFolderForProfile(profile: EagleLibraryProfile): Promise<string | undefined> {
+		if (!profile.defaultFolderId && !profile.defaultFolderPath) return undefined;
+
+		const resolved = resolveDefaultFolder(await this.getFlatFolders(), profile);
+		if (!resolved) {
+			new Notice(
+				`Eagle folder "${profile.defaultFolderPath || profile.defaultFolderId}" no longer exists in ${profile.name} — importing to the library root`
+			);
+			return undefined;
+		}
+
+		if (resolved.repaired) {
+			this.settings.libraries = upsertLibraryProfile(this.settings.libraries, {
+				...profile,
+				defaultFolderId: resolved.id,
+				defaultFolderPath: resolved.path,
+			});
+			await this.saveSettings();
+		}
+		return resolved.id || undefined;
+	}
+
+	private promptForFolder(folders: FlatEagleFolder[], title?: string): Promise<FolderChoice | null> {
+		return new Promise(resolve => {
+			let chosen: FolderChoice | null = null;
+			const modal = new EagleFolderModal(this.app, folders, choice => { chosen = choice; }, { title });
+			modal.onClosed = () => resolve(chosen);
+			modal.open();
+		});
+	}
+
+	private promptForLibrary(libraries: EagleLibraryProfile[], activePath: string): Promise<EagleLibraryProfile | null> {
+		return new Promise(resolve => {
+			let chosen: EagleLibraryProfile | null = null;
+			const modal = new EagleLibraryModal(this.app, libraries, activePath, library => { chosen = library; });
+			modal.onClosed = () => resolve(chosen);
+			modal.open();
+		});
+	}
+
+	/** Turn a 'create' choice into a real folder, returning its new id. */
+	private async materializeFolderChoice(choice: FolderChoice): Promise<string | undefined> {
+		if (choice.kind !== 'create' || !choice.newFolderName) {
+			return choice.folderId || undefined;
+		}
+		const created = await this.api.createFolder(choice.newFolderName, choice.parentId || undefined);
+		if (!created) {
+			new Notice(`Could not create Eagle folder "${choice.newFolderName}" — importing to the library root`);
+			return undefined;
+		}
+		new Notice(`Created Eagle folder "${choice.folderPath}"`);
+		return created.id;
+	}
+
+	/**
+	 * Run an import against the configured target library, switching Eagle if
+	 * needed and switching back afterwards. Returns null when the user cancels a
+	 * prompt or the target could not be reached.
+	 */
+	private async runInTargetLibrary<T>(fn: (folderId: string | undefined) => Promise<T>): Promise<T | null> {
+		const active = await this.api.getActiveLibrary();
+		if (!active) {
+			new Notice('Eagle is not running');
+			return null;
+		}
+
+		// 1. Decide the library.
+		let targetPath = active.path;
+		if (this.settings.libraryTargetMode === 'default' && this.settings.defaultLibraryPath) {
+			targetPath = this.settings.defaultLibraryPath;
+		} else if (this.settings.libraryTargetMode === 'ask' && this.settings.libraries.length > 0) {
+			const picked = await this.promptForLibrary(this.settings.libraries, active.path);
+			if (!picked) return null;
+			targetPath = picked.path;
+		}
+
+		// 2. Switch if that is not what is open.
+		const mustSwitch = targetPath !== active.path;
+		if (mustSwitch) {
+			const notice = new Notice(`Switching Eagle to ${libraryNameFromPath(targetPath)}…`, 0);
+			const result = await this.api.switchLibrary(targetPath, {
+				timeoutMs: this.settings.librarySwitchTimeoutMs,
+			});
+			notice.hide();
+			if (!result.success) {
+				return this.onLibrarySwitchFailed(targetPath, active.path, result.error);
+			}
+		}
+
+		try {
+			// 3. Decide the folder, inside the library that is now open.
+			let folderId: string | undefined;
+			if (this.settings.folderTargetMode === 'ask') {
+				const choice = await this.promptForFolder(await this.getFlatFolders(), 'Import into Eagle folder…');
+				if (!choice) return null;
+				folderId = await this.materializeFolderChoice(choice);
+			} else if (this.settings.folderTargetMode === 'library-default') {
+				const profile = await this.profileForActiveLibrary();
+				folderId = profile ? await this.resolveFolderForProfile(profile) : undefined;
+			}
+
+			return await fn(folderId);
+		} finally {
+			// 4. Put the user's library back.
+			if (mustSwitch && this.settings.restoreLibraryAfterImport) {
+				await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+			}
+		}
+	}
+
+	/**
+	 * DECISION POINT — what to do when Eagle will not open the target library.
+	 *
+	 * The switch can fail for reasons we cannot distinguish from here: the library
+	 * lives on an unmounted volume, Eagle is showing a modal, or it is simply
+	 * slower than `librarySwitchTimeoutMs`. Two defensible policies:
+	 *
+	 *   ABORT (implemented) — tell the user and import nothing. Their paste is
+	 *   lost and must be redone, but nothing lands in the wrong library.
+	 *
+	 *   FALL BACK — import into whatever library is open, warning loudly. The
+	 *   paste survives, but assets can end up scattered across libraries, and
+	 *   Eagle has no API to move an item between folders afterwards, let alone
+	 *   between libraries — so cleaning up means re-importing by hand.
+	 *
+	 * Returning null aborts; returning a value continues the import.
+	 */
+	private onLibrarySwitchFailed(targetPath: string, activePath: string, error?: string): null {
+		new Notice(
+			`Could not open ${libraryNameFromPath(targetPath)} in Eagle — import cancelled. ${error ?? ''}`.trim(),
+			8000
+		);
+		console.error('[CMDS Eagle] library switch failed', { targetPath, activePath, error });
+		return null;
+	}
+
+	/**
+	 * Learn about every library Eagle remembers, plus the one open now, and keep a
+	 * profile for each. Profiles are additive — an existing default folder is never
+	 * overwritten by a rescan.
+	 */
+	async detectLibraries(): Promise<number> {
+		const active = await this.api.getActiveLibrary();
+		const history = await this.api.listLibraryHistory();
+
+		const paths = new Set(history);
+		if (active) paths.add(active.path);
+
+		for (const path of paths) {
+			if (libraryProfileFor(this.settings.libraries, path)) continue;
+			this.settings.libraries = upsertLibraryProfile(this.settings.libraries, {
+				path,
+				name: path === active?.path ? active.name : libraryNameFromPath(path),
+				defaultFolderId: '',
+				defaultFolderPath: '',
+			});
+		}
+
+		await this.saveSettings();
+		return this.settings.libraries.length;
+	}
+
+	/**
+	 * Folders of an arbitrary library. Eagle can only report the open one, so this
+	 * switches, reads and switches back — roughly two seconds of round trip.
+	 */
+	private async foldersForLibrary(libraryPath: string): Promise<FlatEagleFolder[] | null> {
+		const active = await this.api.getActiveLibrary();
+		if (!active) {
+			new Notice('Eagle is not running');
+			return null;
+		}
+
+		if (active.path === libraryPath) {
+			return this.getFlatFolders();
+		}
+
+		const notice = new Notice(`Opening ${libraryNameFromPath(libraryPath)} in Eagle…`, 0);
+		const switched = await this.api.switchLibrary(libraryPath, {
+			timeoutMs: this.settings.librarySwitchTimeoutMs,
+		});
+		notice.hide();
+		if (!switched.success) {
+			this.onLibrarySwitchFailed(libraryPath, active.path, switched.error);
+			return null;
+		}
+
+		try {
+			return await this.getFlatFolders();
+		} finally {
+			await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+		}
+	}
+
+	/** Pick — or create — the folder that imports into `libraryPath` should land in. */
+	async setDefaultFolderForLibrary(libraryPath: string): Promise<boolean> {
+		const profile = libraryProfileFor(this.settings.libraries, libraryPath);
+		if (!profile) return false;
+
+		const folders = await this.foldersForLibrary(libraryPath);
+		if (!folders) return false;
+
+		const choice = await this.promptForFolder(folders, `Default folder for ${profile.name}…`);
+		if (!choice) return false;
+
+		// Creating has to happen with that library open, so it runs in the same trip.
+		let folderId = choice.folderId;
+		let folderPath = choice.folderPath;
+		if (choice.kind === 'create') {
+			const created = await this.withLibraryOpen(libraryPath, () =>
+				this.materializeFolderChoice(choice));
+			if (!created) return false;
+			folderId = created;
+		}
+
+		this.settings.libraries = upsertLibraryProfile(this.settings.libraries, {
+			...profile,
+			defaultFolderId: folderId,
+			defaultFolderPath: folderPath,
+		});
+		await this.saveSettings();
+		new Notice(`${profile.name} → ${folderPath || 'library root'}`);
+		return true;
+	}
+
+	async clearDefaultFolderForLibrary(libraryPath: string): Promise<void> {
+		const profile = libraryProfileFor(this.settings.libraries, libraryPath);
+		if (!profile) return;
+		this.settings.libraries = upsertLibraryProfile(this.settings.libraries, {
+			...profile,
+			defaultFolderId: '',
+			defaultFolderPath: '',
+		});
+		await this.saveSettings();
+	}
+
+	/** Run `fn` with `libraryPath` open, then put the previous library back. */
+	private async withLibraryOpen<T>(libraryPath: string, fn: () => Promise<T>): Promise<T | null> {
+		const active = await this.api.getActiveLibrary();
+		if (!active) return null;
+		if (active.path === libraryPath) return fn();
+
+		const switched = await this.api.switchLibrary(libraryPath, {
+			timeoutMs: this.settings.librarySwitchTimeoutMs,
+		});
+		if (!switched.success) {
+			this.onLibrarySwitchFailed(libraryPath, active.path, switched.error);
+			return null;
+		}
+		try {
+			return await fn();
+		} finally {
+			await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+		}
+	}
+
+	/** Switch Eagle's open library from Obsidian, without importing anything. */
+	private async switchLibraryCommand(): Promise<void> {
+		if (this.settings.libraries.length === 0) {
+			await this.detectLibraries();
+		}
+		const active = await this.api.getActiveLibrary();
+		if (!active) {
+			new Notice('Eagle is not running');
+			return;
+		}
+		const picked = await this.promptForLibrary(this.settings.libraries, active.path);
+		if (!picked || picked.path === active.path) return;
+
+		const notice = new Notice(`Switching Eagle to ${picked.name}…`, 0);
+		const result = await this.api.switchLibrary(picked.path, {
+			timeoutMs: this.settings.librarySwitchTimeoutMs,
+		});
+		notice.hide();
+		if (result.success) {
+			new Notice(`Eagle is now on ${picked.name}`);
+		} else {
+			this.onLibrarySwitchFailed(picked.path, active.path, result.error);
+		}
 	}
 
 	private openSearchModal(): void {
@@ -496,11 +859,11 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		}
 
 		const name = `Captured from Obsidian - ${new Date().toISOString()}`;
-		const success = await this.api.addFromUrl({
+		const success = await this.runInTargetLibrary(folderId => this.api.addFromUrl({
 			url: clipboardText,
 			name,
-			folderId: this.settings.defaultFolder || undefined,
-		});
+			folderId,
+		}));
 
 		if (success) {
 			new Notice('URL captured to Eagle');
@@ -1151,32 +1514,42 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			const absolutePath = this.getAbsolutePath(file.path);
 			const filenameWithoutExt = file.basename;
 			
-			const result = await this.api.addFromPath({
-				path: absolutePath,
-				name: filenameWithoutExt,
-				folderId: this.settings.defaultFolder || undefined,
+			const notePath = this.app.workspace.getActiveFile()?.path ?? '';
+
+			// Everything Eagle-facing runs inside the target library: the item, its
+			// original file and its thumbnail only exist while that library is open.
+			const imported = await this.runInTargetLibrary(async folderId => {
+				const result = await this.api.addFromPath({
+					path: absolutePath,
+					name: filenameWithoutExt,
+					folderId,
+				});
+
+				if (!result.success || !result.itemId) {
+					throw new Error('Failed to add image to Eagle');
+				}
+
+				const item = await this.waitForImportedItem(result.itemId);
+				if (!item) {
+					throw new Error(`Eagle accepted the file but did not return item ${result.itemId}`);
+				}
+				const originalFilePath = await this.waitForImportedOriginal(item);
+				if (!originalFilePath) {
+					throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready`);
+				}
+
+				return { item, markdown: await this.buildEmbedForItem(item, notePath, { originalFilePath }) };
 			});
 
-			if (!result.success || !result.itemId) {
-				throw new Error('Failed to add image to Eagle');
+			if (!imported) {
+				throw new Error('Import cancelled');
 			}
 
-			const item = await this.waitForImportedItem(result.itemId);
-			if (!item) {
-				throw new Error(`Eagle accepted the file but did not return item ${result.itemId}`);
-			}
-			const originalFilePath = await this.waitForImportedOriginal(item);
-			if (!originalFilePath) {
-				throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready`);
-			}
-
-			const notePath = this.app.workspace.getActiveFile()?.path ?? '';
-			const markdown = await this.buildEmbedForItem(item, notePath, { originalFilePath });
-			this.replaceTextInDocument(editor, placeholderText, markdown);
+			this.replaceTextInDocument(editor, placeholderText, imported.markdown);
 
 			new Notice(`Uploaded to Eagle: ${file.name}`);
 
-			await this.offerToReplaceOtherReferences(file, item, { line: startPos.line, ch: startPos.ch });
+			await this.offerToReplaceOtherReferences(file, imported.item, { line: startPos.line, ch: startPos.ch });
 
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1216,14 +1589,20 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 
 		let moved = 0;
 		const failures: string[] = [];
-		for (const file of targets) {
-			const succeeded = await this.migrateSingleImage(file);
-			if (succeeded) {
-				moved++;
-			} else {
-				failures.push(file.path);
+		// One library switch for the whole batch. Wrapping each image instead would
+		// cost a ~1s switch per file and leave the library flapping.
+		const ran = await this.runInTargetLibrary(async folderId => {
+			for (const file of targets) {
+				const succeeded = await this.migrateSingleImage(file, folderId);
+				if (succeeded) {
+					moved++;
+				} else {
+					failures.push(file.path);
+				}
 			}
-		}
+			return true;
+		});
+		if (!ran) return;
 
 		if (failures.length > 0) {
 			console.warn('[CMDS Eagle] Files left in the vault:', failures);
@@ -1235,13 +1614,17 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 		);
 	}
 
-	/** Import one vault file, rewrite every reference to it, then trash the original. */
-	private async migrateSingleImage(file: TFile): Promise<boolean> {
+	/**
+	 * Import one vault file, rewrite every reference to it, then trash the original.
+	 * `folderId` is resolved once by the caller — this runs inside an already
+	 * switched-to target library.
+	 */
+	private async migrateSingleImage(file: TFile, folderId: string | undefined): Promise<boolean> {
 		try {
 			const result = await this.api.addFromPath({
 				path: this.getAbsolutePath(file.path),
 				name: file.basename,
-				folderId: this.settings.defaultFolder || undefined,
+				folderId,
 			});
 			if (!result.success || !result.itemId) return false;
 
@@ -1643,6 +2026,25 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			return;
 		}
 		const providerName = this.getActiveCloudProviderName();
+
+		// One library switch for the whole drop. The Eagle work has to happen while
+		// the target library is still open, so the entire loop lives inside the
+		// callback rather than just the folder lookup.
+		if (!this.settings.excalidrawImportToEagle) {
+			await this.uploadCanvasFiles(view, files, provider, providerName, undefined);
+			return;
+		}
+		await this.runInTargetLibrary(folderId =>
+			this.uploadCanvasFiles(view, files, provider, providerName, folderId));
+	}
+
+	private async uploadCanvasFiles(
+		view: ExcalidrawViewLike,
+		files: File[],
+		provider: CloudProvider,
+		providerName: string,
+		folderId: string | undefined
+	): Promise<boolean> {
 		for (const file of files) {
 			try {
 				const temp = await this.saveToTempLocation(file);
@@ -1654,7 +2056,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 					const added = await this.api.addFromPath({
 						path: temp.absolutePath,
 						name: file.name.replace(/\.[^.]+$/, ''),
-						folderId: this.settings.defaultFolder || undefined,
+						folderId,
 					});
 					if (added.success && added.itemId) {
 						const item = await this.waitForImportedItem(added.itemId);
@@ -1683,6 +2085,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 				new Notice(`Failed to add image to Excalidraw canvas: ${file.name}`);
 			}
 		}
+		return true;
 	}
 
 	/**
@@ -1762,26 +2165,32 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 
 		const temp = await this.saveToTempLocation(file);
 		const filenameWithoutExt = file.name.replace(/\.[^.]+$/, '');
-		const result = await this.api.addFromPath({
-			path: temp.absolutePath,
-			name: filenameWithoutExt,
-			folderId: this.settings.defaultFolder || undefined,
+		const markdown = await this.runInTargetLibrary(async folderId => {
+			const result = await this.api.addFromPath({
+				path: temp.absolutePath,
+				name: filenameWithoutExt,
+				folderId,
+			});
+
+			if (!result.success || !result.itemId) {
+				throw new Error(`Failed to add image to Eagle (staged copy kept at ${temp.vaultPath})`);
+			}
+
+			const item = await this.waitForImportedItem(result.itemId);
+			if (!item) {
+				throw new Error(`Eagle accepted the file but did not return item ${result.itemId} (staged copy kept at ${temp.vaultPath})`);
+			}
+			const originalFilePath = await this.waitForImportedOriginal(item);
+			if (!originalFilePath) {
+				throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready (staged copy kept at ${temp.vaultPath})`);
+			}
+
+			return this.buildEmbedForItem(item, notePath, { originalFilePath });
 		});
 
-		if (!result.success || !result.itemId) {
-			throw new Error(`Failed to add image to Eagle (staged copy kept at ${temp.vaultPath})`);
+		if (markdown === null) {
+			throw new Error(`Import cancelled (staged copy kept at ${temp.vaultPath})`);
 		}
-
-		const item = await this.waitForImportedItem(result.itemId);
-		if (!item) {
-			throw new Error(`Eagle accepted the file but did not return item ${result.itemId} (staged copy kept at ${temp.vaultPath})`);
-		}
-		const originalFilePath = await this.waitForImportedOriginal(item);
-		if (!originalFilePath) {
-			throw new Error(`Eagle returned item ${result.itemId}, but its original file is not ready (staged copy kept at ${temp.vaultPath})`);
-		}
-
-		const markdown = await this.buildEmbedForItem(item, notePath, { originalFilePath });
 		await this.removeTempFile(temp);
 		return markdown;
 	}
