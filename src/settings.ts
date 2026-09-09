@@ -203,7 +203,7 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Include metadata card')
-			.setDesc('Add metadata (type, size, tags, Eagle link) below the image when embedding')
+			.setDesc('Add the block metadata card when inserting an Eagle link. Embeds are governed by "What goes into the note" above.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.insertThumbnail)
 				.onChange(async (value) => {

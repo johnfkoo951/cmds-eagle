@@ -66,7 +66,7 @@ var DEFAULT_SETTINGS = {
   embedImageInCard: true,
   insertAsEmbed: true,
   imagePasteBehavior: "eagle",
-  linkMode: "photo-info",
+  linkMode: "cmds-eagle",
   vaultThumbnailDir: "attachments/eagle",
   deleteTempAfterImport: true,
   thumbnailPollTimeoutMs: 1e4,
@@ -132,7 +132,8 @@ var DEFAULT_SETTINGS = {
 
 // src/canonical.ts
 var CARD_SEPARATOR = " \xB7 ";
-var OPEN_IN_EAGLE_LABEL = "Eagle\uC5D0\uC11C \uC5F4\uAE30";
+var OPEN_IN_EAGLE_LABEL = "Open in Eagle";
+var CLOUD_LABEL = "Cloud";
 var MODES_WITH_CARD = /* @__PURE__ */ new Set(["photo-info", "cmds-eagle"]);
 function modeNeedsThumbnail(mode) {
   return mode === "photo-info" || mode === "photo-only";
@@ -186,6 +187,9 @@ function buildMetadataCard(item, options) {
   const tags = filterMarkerTags(item.tags, options.hiddenTagPrefixes).map((tag) => `#${normalize(tag)}`).join(" ");
   if (tags) {
     segments.push(tags);
+  }
+  if (options.cloudUrl) {
+    segments.push(`[${CLOUD_LABEL}](${options.cloudUrl})`);
   }
   segments.push(`[${OPEN_IN_EAGLE_LABEL}](${eagleDeeplink(item.id)})`);
   return `> ${segments.join(CARD_SEPARATOR)}`;
@@ -1368,7 +1372,7 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.plugin.saveSettings();
     }));
     new import_obsidian3.Setting(containerEl).setName("Search & embed").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc("Add metadata (type, size, tags, Eagle link) below the image when embedding").addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc('Add the block metadata card when inserting an Eagle link. Embeds are governed by "What goes into the note" above.').addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
       this.plugin.settings.insertThumbnail = value;
       await this.plugin.saveSettings();
     }));
@@ -3754,6 +3758,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
         fileUrl,
         hiddenTagPrefixes: this.settings.cardHiddenTagPrefixes,
         normalizeTag: (tag) => this.normalizeTag(tag),
+        cloudUrl: this.api.getCloudUrl(item),
         includeCard: options == null ? void 0 : options.includeCard
       }
     );

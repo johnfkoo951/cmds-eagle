@@ -36,7 +36,7 @@ const DEFAULT_OPTIONS: CanonicalRenderOptions = {
 	hiddenTagPrefixes: ['cli-eagle:', 'r2:'],
 };
 
-const CARD = '> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Eagle에서 열기](eagle://item/KXYZ01)';
+const CARD = '> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Open in Eagle](eagle://item/KXYZ01)';
 const LINKED_THUMBNAIL = '[![hero shot](attachments/eagle/KXYZ01.png)](eagle://item/KXYZ01)';
 
 test('photo-info renders the thumbnail and the card', () => {
@@ -156,7 +156,7 @@ test('the card is exactly one line and drops empty segments', () => {
 	const pdf: CanonicalItem = { ...HERO_SHOT, ext: 'pdf', width: 0, height: 0, tags: [] };
 	const card = buildMetadataCard(pdf, DEFAULT_OPTIONS);
 
-	assert.equal(card, '> `pdf` · 4.2 MB · [Eagle에서 열기](eagle://item/KXYZ01)');
+	assert.equal(card, '> `pdf` · 4.2 MB · [Open in Eagle](eagle://item/KXYZ01)');
 	assert.equal(card.split('\n').length, 1);
 });
 
@@ -165,7 +165,7 @@ test('marker tags stay out of the card', () => {
 
 	assert.equal(
 		buildMetadataCard(tagged, DEFAULT_OPTIONS),
-		'> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Eagle에서 열기](eagle://item/KXYZ01)'
+		'> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Open in Eagle](eagle://item/KXYZ01)'
 	);
 });
 
@@ -229,4 +229,19 @@ test('brackets in item names cannot break the markdown link', () => {
 
 	assert.equal(escapeMarkdownAltText('shot [v2]'), 'shot \\[v2\\]');
 	assert.ok(buildCanonicalEmbed(bracketed, DEFAULT_OPTIONS).startsWith('[![shot \\[v2\\]]('));
+});
+
+test('an uploaded item keeps its cloud link in the card', () => {
+	assert.equal(
+		buildMetadataCard(HERO_SHOT, { ...DEFAULT_OPTIONS, cloudUrl: 'https://cdn.example.com/KXYZ01.png' }),
+		'> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Cloud](https://cdn.example.com/KXYZ01.png) · [Open in Eagle](eagle://item/KXYZ01)'
+	);
+});
+
+test('the cloud segment is omitted when the item has no cloud copy', () => {
+	for (const cloudUrl of [null, undefined, '']) {
+		const card = buildMetadataCard(HERO_SHOT, { ...DEFAULT_OPTIONS, cloudUrl });
+		assert.ok(!card.includes('[Cloud]'), `cloudUrl=${JSON.stringify(cloudUrl)} must not render a segment`);
+		assert.equal(card.split('\n').length, 1);
+	}
 });

@@ -264,7 +264,7 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	embedImageInCard: true,
 	insertAsEmbed: true,
 	imagePasteBehavior: 'eagle',
-	linkMode: 'photo-info',
+	linkMode: 'cmds-eagle',
 	vaultThumbnailDir: 'attachments/eagle',
 	deleteTempAfterImport: true,
 	thumbnailPollTimeoutMs: 10000,

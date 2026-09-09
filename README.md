@@ -20,17 +20,17 @@ the note**. The second one is `linkMode`:
 
 | mode | note contains | vault copies | other devices |
 |---|---|---|---|
-| **`photo-info`** (default) | thumbnail + one-line card | 1 thumbnail | ✅ |
+| **`photo-info`** | thumbnail + one-line card | 1 thumbnail | ✅ |
 | `photo-only` | thumbnail | 1 thumbnail | ✅ |
 | `link-only` | `eagle://` link | none | ✅ |
-| `cmds-eagle` | absolute `file://` embed + card | none | registered desktops only |
+| **`cmds-eagle`** (default) | absolute `file://` embed + card | none | registered desktops only |
 | `cmds-eagle-photo-only` | absolute `file://` embed | none | registered desktops only |
 | `cmds-eagle-photo-link` | original image linked to its `eagle://` item | none | registered desktops only |
 
 ```markdown
 # photo-info
 [![hero shot](attachments/eagle/KXYZ01.png)](eagle://item/KXYZ01)
-> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Eagle에서 열기](eagle://item/KXYZ01)
+> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Open in Eagle](eagle://item/KXYZ01)
 
 # photo-only
 [![hero shot](attachments/eagle/KXYZ01.png)](eagle://item/KXYZ01)
@@ -40,7 +40,7 @@ the note**. The second one is `linkMode`:
 
 # cmds-eagle
 ![hero shot](file:///Volumes/…/My%20Library.library/images/KXYZ01.info/hero%20shot.png)
-> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Eagle에서 열기](eagle://item/KXYZ01)
+> `png` · 4.2 MB · 1920×1080 · #ui #ref · [Open in Eagle](eagle://item/KXYZ01)
 
 # cmds-eagle-photo-only
 ![hero shot](file:///Volumes/…/My%20Library.library/images/KXYZ01.info/hero%20shot.png)

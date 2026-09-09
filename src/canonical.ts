@@ -1,7 +1,7 @@
 // Canonical markdown output contract, protected by golden-string tests:
 //
 //   [![hero shot](attachments/eagle/KXYZ01.png)](eagle://item/KXYZ01)
-//   > `png` · 4.2 MB · 1920×1080 · #ui #ref · [Eagle에서 열기](eagle://item/KXYZ01)
+//   > `png` · 4.2 MB · 1920×1080 · #ui #ref · [Open in Eagle](eagle://item/KXYZ01)
 //
 // Rules: thumbnail filename is always keyed by item id, the image path is
 // relative to the note file, and the metadata card is exactly one line.
@@ -10,7 +10,8 @@
 import type { LinkMode } from './types';
 
 const CARD_SEPARATOR = ' · ';
-const OPEN_IN_EAGLE_LABEL = 'Eagle에서 열기';
+const OPEN_IN_EAGLE_LABEL = 'Open in Eagle';
+const CLOUD_LABEL = 'Cloud';
 
 export interface CanonicalItem {
 	id: string;
@@ -30,6 +31,8 @@ export interface CanonicalRenderOptions {
 	fileUrl?: string | null;
 	hiddenTagPrefixes: string[];
 	normalizeTag?: (tag: string) => string;
+	/** Public URL of the cloud copy, when the item has been uploaded. Rendered as a card segment. */
+	cloudUrl?: string | null;
 	/** Suppresses the metadata card for inline replacements, where it would break the text. */
 	includeCard?: boolean;
 }
@@ -119,6 +122,10 @@ export function buildMetadataCard(item: CanonicalItem, options: CanonicalRenderO
 		.join(' ');
 	if (tags) {
 		segments.push(tags);
+	}
+
+	if (options.cloudUrl) {
+		segments.push(`[${CLOUD_LABEL}](${options.cloudUrl})`);
 	}
 
 	segments.push(`[${OPEN_IN_EAGLE_LABEL}](${eagleDeeplink(item.id)})`);

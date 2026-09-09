@@ -1830,6 +1830,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 				fileUrl,
 				hiddenTagPrefixes: this.settings.cardHiddenTagPrefixes,
 				normalizeTag: (tag: string) => this.normalizeTag(tag),
+				cloudUrl: this.api.getCloudUrl(item),
 				includeCard: options?.includeCard,
 			}
 		);
