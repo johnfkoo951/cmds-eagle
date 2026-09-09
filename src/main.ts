@@ -461,7 +461,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 		} finally {
 			// 4. Put the user's library back.
 			if (mustSwitch && this.settings.restoreLibraryAfterImport) {
-				await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+				await this.restoreLibrary(active.path, targetPath);
 			}
 		}
 	}
@@ -556,7 +556,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 		try {
 			return await this.getFlatFolders();
 		} finally {
-			await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+			await this.restoreLibrary(active.path, libraryPath);
 		}
 	}
 
@@ -618,9 +618,25 @@ export default class CMDSPACELinkEagle extends Plugin {
 		try {
 			return await fn();
 		} finally {
-			await this.api.switchLibrary(active.path, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+			await this.restoreLibrary(active.path, libraryPath);
 		}
 	}
+
+	/**
+	 * Put `previousPath` back after a round trip — unless Eagle is no longer on the
+	 * library we switched it to, which means the user picked something else in
+	 * Eagle while we were working. Their choice wins; yanking the library back
+	 * under them would be worse than leaving it where they put it.
+	 */
+	private async restoreLibrary(previousPath: string, expectedPath: string): Promise<void> {
+		const now = await this.api.getActiveLibrary();
+		if (now && normalizeLibraryPath(now.path) !== normalizeLibraryPath(expectedPath)) {
+			console.log('[CMDS Eagle] library changed during the operation; leaving Eagle on', now.path);
+			return;
+		}
+		await this.api.switchLibrary(previousPath, { timeoutMs: this.settings.librarySwitchTimeoutMs });
+	}
+
 
 	/** Switch Eagle's open library from Obsidian, without importing anything. */
 	private async switchLibraryCommand(): Promise<void> {
