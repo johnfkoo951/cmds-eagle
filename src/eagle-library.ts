@@ -12,6 +12,16 @@
 import type { EagleFolder, EagleLibraryProfile, FlatEagleFolder } from './types';
 
 /**
+ * Eagle reports the same library both with and without a trailing separator —
+ * its own history list has been observed to contain both forms for one library.
+ * Every comparison and every stored path goes through here so one library never
+ * becomes two profiles.
+ */
+export function normalizeLibraryPath(path: string): string {
+	return path.replace(/[/\\]+$/, '');
+}
+
+/**
  * `/Users/x/CMDS Design Library.library` -> `CMDS Design Library`.
  * Falls back to the basename when the path does not carry the `.library` suffix,
  * so a hand-typed path still produces something showable.
@@ -107,7 +117,8 @@ export function libraryProfileFor(
 	path: string
 ): EagleLibraryProfile | null {
 	if (!path) return null;
-	return libraries.find(library => library.path === path) ?? null;
+	const target = normalizeLibraryPath(path);
+	return libraries.find(library => normalizeLibraryPath(library.path) === target) ?? null;
 }
 
 /** Returns a new array — callers hold plugin settings, which must not be mutated in place. */
@@ -115,11 +126,14 @@ export function upsertLibraryProfile(
 	libraries: EagleLibraryProfile[],
 	profile: EagleLibraryProfile
 ): EagleLibraryProfile[] {
-	const index = libraries.findIndex(library => library.path === profile.path);
+	const normalized = { ...profile, path: normalizeLibraryPath(profile.path) };
+	const index = libraries.findIndex(
+		library => normalizeLibraryPath(library.path) === normalized.path
+	);
 	if (index === -1) {
-		return [...libraries, profile];
+		return [...libraries, normalized];
 	}
 	const next = [...libraries];
-	next[index] = { ...next[index], ...profile };
+	next[index] = { ...next[index], ...normalized };
 	return next;
 }

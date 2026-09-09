@@ -24,6 +24,7 @@ import {
 	flattenFolders,
 	libraryNameFromPath,
 	libraryProfileFor,
+	normalizeLibraryPath,
 	resolveDefaultFolder,
 	upsertLibraryProfile,
 } from './eagle-library';
@@ -500,8 +501,18 @@ export default class CMDSPACELinkEagle extends Plugin {
 		const active = await this.api.getActiveLibrary();
 		const history = await this.api.listLibraryHistory();
 
-		const paths = new Set(history);
-		if (active) paths.add(active.path);
+		// Fold profiles saved before paths were normalised. Eagle's history lists
+		// one library both with and without a trailing separator, which used to
+		// produce two profiles for it. Keep whichever copy carries a folder.
+		let deduped: EagleLibraryProfile[] = [];
+		for (const profile of this.settings.libraries) {
+			if (libraryProfileFor(deduped, profile.path) && !profile.defaultFolderId) continue;
+			deduped = upsertLibraryProfile(deduped, profile);
+		}
+		this.settings.libraries = deduped;
+
+		const paths = new Set(history.map(normalizeLibraryPath));
+		if (active) paths.add(normalizeLibraryPath(active.path));
 
 		for (const path of paths) {
 			if (libraryProfileFor(this.settings.libraries, path)) continue;

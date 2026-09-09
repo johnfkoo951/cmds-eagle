@@ -10,7 +10,7 @@ import {
 	LibrarySwitchResult,
 	R2UploadResult,
 } from './types';
-import { libraryNameFromPath } from './eagle-library';
+import { libraryNameFromPath, normalizeLibraryPath } from './eagle-library';
 
 export class EagleApiService {
 	private baseUrl: string;
@@ -481,11 +481,6 @@ export class EagleApiService {
 		});
 		return response.json as EagleApiResponse<T>;
 	}
-}
-
-/** Trailing slashes vary by source; macOS paths are case-preserving so case is kept. */
-function normalizeLibraryPath(path: string): string {
-	return path.replace(/[/\\]+$/, '');
 }
 
 function delay(ms: number): Promise<void> {

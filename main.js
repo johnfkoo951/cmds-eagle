@@ -139,6 +139,9 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/eagle-library.ts
+function normalizeLibraryPath(path) {
+  return path.replace(/[/\\]+$/, "");
+}
 function libraryNameFromPath(path) {
   var _a;
   if (!path)
@@ -201,15 +204,19 @@ function libraryProfileFor(libraries, path) {
   var _a;
   if (!path)
     return null;
-  return (_a = libraries.find((library) => library.path === path)) != null ? _a : null;
+  const target = normalizeLibraryPath(path);
+  return (_a = libraries.find((library) => normalizeLibraryPath(library.path) === target)) != null ? _a : null;
 }
 function upsertLibraryProfile(libraries, profile) {
-  const index = libraries.findIndex((library) => library.path === profile.path);
+  const normalized = { ...profile, path: normalizeLibraryPath(profile.path) };
+  const index = libraries.findIndex(
+    (library) => normalizeLibraryPath(library.path) === normalized.path
+  );
   if (index === -1) {
-    return [...libraries, profile];
+    return [...libraries, normalized];
   }
   const next = [...libraries];
-  next[index] = { ...next[index], ...profile };
+  next[index] = { ...next[index], ...normalized };
   return next;
 }
 
@@ -1051,9 +1058,6 @@ var EagleApiService = class {
     return response.json;
   }
 };
-function normalizeLibraryPath(path) {
-  return path.replace(/[/\\]+$/, "");
-}
 function delay2(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -2978,9 +2982,16 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
   async detectLibraries() {
     const active = await this.api.getActiveLibrary();
     const history = await this.api.listLibraryHistory();
-    const paths = new Set(history);
+    let deduped = [];
+    for (const profile of this.settings.libraries) {
+      if (libraryProfileFor(deduped, profile.path) && !profile.defaultFolderId)
+        continue;
+      deduped = upsertLibraryProfile(deduped, profile);
+    }
+    this.settings.libraries = deduped;
+    const paths = new Set(history.map(normalizeLibraryPath));
     if (active)
-      paths.add(active.path);
+      paths.add(normalizeLibraryPath(active.path));
     for (const path of paths) {
       if (libraryProfileFor(this.settings.libraries, path))
         continue;

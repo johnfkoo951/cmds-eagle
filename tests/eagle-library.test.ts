@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
 	libraryNameFromPath,
+	normalizeLibraryPath,
 	flattenFolders,
 	findFolderByPath,
 	findFolderById,
@@ -180,4 +181,30 @@ test('upsertLibraryProfile updates in place, preserving position', () => {
 	assert.equal(next[1].defaultFolderId, 'CHANGED');
 	assert.equal(next[1].defaultFolderPath, 'Inbox');
 	assert.equal(second.defaultFolderId, PROFILE.defaultFolderId, 'the original entry must be untouched');
+});
+
+test('normalizeLibraryPath folds the trailing-separator forms Eagle reports', () => {
+	// Eagle's own /api/library/history returns both spellings for one library.
+	assert.equal(
+		normalizeLibraryPath('/Users/yohankoo/YHN/Yohan Koo Library.library/'),
+		normalizeLibraryPath('/Users/yohankoo/YHN/Yohan Koo Library.library')
+	);
+	assert.equal(normalizeLibraryPath('Z:\\Assets\\Shared.library\\'), 'Z:\\Assets\\Shared.library');
+	assert.equal(normalizeLibraryPath(''), '');
+});
+
+test('a library is never split in two by a trailing slash', () => {
+	const slashed: EagleLibraryProfile = {
+		path: '/Users/x/Photo.library/',
+		name: 'Photo',
+		defaultFolderId: 'F1',
+		defaultFolderPath: 'Inbox',
+	};
+
+	const merged = upsertLibraryProfile([slashed], { ...slashed, path: '/Users/x/Photo.library' });
+	assert.equal(merged.length, 1, 'the two spellings must collapse into one profile');
+	assert.equal(merged[0].path, '/Users/x/Photo.library', 'the stored path is normalised');
+
+	assert.equal(libraryProfileFor(merged, '/Users/x/Photo.library/')?.defaultFolderId, 'F1');
+	assert.equal(libraryProfileFor([slashed], '/Users/x/Photo.library')?.name, 'Photo');
 });
