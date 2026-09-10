@@ -378,20 +378,39 @@ export default class CMDSPACELinkEagle extends Plugin {
 		return resolved.id || undefined;
 	}
 
+	/**
+	 * Obsidian's SuggestModal runs `close()` BEFORE `onChooseSuggestion()`:
+	 *
+	 *   selectSuggestion(e, t) { …, this.close(), this.isOpen = false, this.onChooseSuggestion(e, t) }
+	 *
+	 * So the dismissal path must yield a tick before reporting "cancelled",
+	 * otherwise it fires first and cancels every successful selection.
+	 */
 	private promptForFolder(folders: FlatEagleFolder[], title?: string): Promise<FolderChoice | null> {
 		return new Promise(resolve => {
-			let chosen: FolderChoice | null = null;
-			const modal = new EagleFolderModal(this.app, folders, choice => { chosen = choice; }, { title });
-			modal.onClosed = () => resolve(chosen);
+			let settled = false;
+			const settle = (choice: FolderChoice | null): void => {
+				if (settled) return;
+				settled = true;
+				resolve(choice);
+			};
+			const modal = new EagleFolderModal(this.app, folders, choice => settle(choice), { title });
+			modal.onClosed = () => window.setTimeout(() => settle(null), 0);
 			modal.open();
 		});
 	}
 
+	/** Same close-before-choose ordering as promptForFolder — see that comment. */
 	private promptForLibrary(libraries: EagleLibraryProfile[], activePath: string): Promise<EagleLibraryProfile | null> {
 		return new Promise(resolve => {
-			let chosen: EagleLibraryProfile | null = null;
-			const modal = new EagleLibraryModal(this.app, libraries, activePath, library => { chosen = library; });
-			modal.onClosed = () => resolve(chosen);
+			let settled = false;
+			const settle = (library: EagleLibraryProfile | null): void => {
+				if (settled) return;
+				settled = true;
+				resolve(library);
+			};
+			const modal = new EagleLibraryModal(this.app, libraries, activePath, library => settle(library));
+			modal.onClosed = () => window.setTimeout(() => settle(null), 0);
 			modal.open();
 		});
 	}
