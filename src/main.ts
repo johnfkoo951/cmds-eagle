@@ -48,6 +48,7 @@ import {
 	safeDecodeUri,
 } from './platform-paths';
 import { processRenderedImageMutations } from './rendered-images';
+import { resolveAttachmentPath } from './attachment-path';
 import { fsp } from './fs-utils';
 import { 
 	EagleApiService, 
@@ -1351,20 +1352,11 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |\n` : ''}${linkSec
 			
 			const vault = this.app.vault as unknown as { getConfig: (key: string) => string | undefined };
 			const attachmentFolder = vault.getConfig?.('attachmentFolderPath') || '';
-			let targetPath: string;
-			
-			if (attachmentFolder === './') {
-				const parentFolder = activeFile.parent?.path || '';
-				targetPath = parentFolder ? `${parentFolder}/${filename}` : filename;
-			} else if (attachmentFolder.startsWith('./')) {
-				const parentFolder = activeFile.parent?.path || '';
-				const relativeFolder = attachmentFolder.slice(2);
-				targetPath = parentFolder ? `${parentFolder}/${relativeFolder}/${filename}` : `${relativeFolder}/${filename}`;
-			} else if (attachmentFolder && attachmentFolder !== "/") {
-				targetPath = `${attachmentFolder}/${filename}`;
-			} else {
-				targetPath = filename;
-			}
+			const targetPath = resolveAttachmentPath(
+				attachmentFolder,
+				activeFile.parent?.path || '',
+				filename
+			);
 
 			const folderPath = targetPath.substring(0, targetPath.lastIndexOf('/'));
 			if (folderPath) {
