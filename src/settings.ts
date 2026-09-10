@@ -338,6 +338,19 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		new Setting(containerEl)
+			.setName('Items to pre-load for search')
+			.setDesc('How many items the search modal loads up front. Beyond this, typing falls back to Eagle\'s own keyword search, so nothing is unreachable. Eagle\'s default of 200 is too low for most libraries.')
+			.addText(text => text
+				.setPlaceholder('5000')
+				.setValue(String(this.plugin.settings.searchFetchLimit))
+				.onChange(async (value) => {
+					const parsed = Number.parseInt(value, 10);
+					if (Number.isNaN(parsed) || parsed < 1) return;
+					this.plugin.settings.searchFetchLimit = parsed;
+					await this.plugin.saveSettings();
+				}));
+
 		this.renderSearchFiltersSettings(containerEl);
 
 		new Setting(containerEl).setName('Cloud storage provider').setHeading();

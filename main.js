@@ -77,6 +77,7 @@ var DEFAULT_SETTINGS = {
   activeCloudProvider: "imghippo",
   searchScope: ["name", "tags"],
   searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],
+  searchFetchLimit: 5e3,
   cloudProviders: {
     r2: {
       type: "r2",
@@ -695,6 +696,26 @@ function processRenderedImageMutations(mutations, processImage) {
   return images.size;
 }
 
+// src/attachment-path.ts
+function resolveAttachmentPath(attachmentFolder, noteParentFolder, filename) {
+  const setting = (attachmentFolder != null ? attachmentFolder : "").trim();
+  const parent = trimSlashes(noteParentFolder != null ? noteParentFolder : "");
+  if (setting === "./") {
+    return join(parent, filename);
+  }
+  if (setting.startsWith("./")) {
+    return join(parent, trimSlashes(setting.slice(2)), filename);
+  }
+  const fixed = trimSlashes(setting);
+  return join(fixed, filename);
+}
+function trimSlashes(value) {
+  return value.replace(/^\/+|\/+$/g, "");
+}
+function join(...parts) {
+  return parts.filter((part) => part.length > 0).join("/");
+}
+
 // src/api.ts
 var import_obsidian = require("obsidian");
 var EagleApiService = class {
@@ -1162,12 +1183,19 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
     this.isLoading = false;
     this.filterContainer = null;
     this.libraryNameEl = null;
+    /** True when the library holds more items than the pre-load cap. */
+    this.capped = false;
+    this.knownIds = /* @__PURE__ */ new Set();
+    this.keywordTimer = null;
+    /** Guards the synthetic 'input' event we fire to refresh the list. */
+    this.refreshing = false;
     const { api, settings } = deps;
     this.api = api;
     this.settings = settings;
     this.buildEmbed = deps.buildEmbed;
     this.activeScopes = new Set(settings.searchScope);
     this.activeFileTypes = new Set(settings.searchFileTypes);
+    this.fetchLimit = settings.searchFetchLimit || 5e3;
     this.setPlaceholder("Search Eagle items...");
     this.setInstructions([
       { command: "\u2191\u2193", purpose: "navigate" },
@@ -1178,10 +1206,56 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
   async onOpen() {
     void super.onOpen();
     this.buildFilterUI();
+    this.inputEl.addEventListener("input", () => this.scheduleKeywordSearch());
     await this.loadItems();
   }
+  onClose() {
+    if (this.keywordTimer !== null)
+      window.clearTimeout(this.keywordTimer);
+    super.onClose();
+  }
+  /**
+   * Ask Eagle to search, debounced.
+   *
+   * The pre-loaded set is capped, and fuzzy matching only ever sees what was
+   * pre-loaded — which is why search used to miss most of a large library.
+   * Eagle's own keyword search covers everything, so its hits are merged in as
+   * the user types and anything new refreshes the list.
+   */
+  scheduleKeywordSearch() {
+    if (this.refreshing)
+      return;
+    if (this.keywordTimer !== null)
+      window.clearTimeout(this.keywordTimer);
+    const query = this.inputEl.value.trim();
+    if (query.length < 2)
+      return;
+    this.keywordTimer = window.setTimeout(() => {
+      void this.runKeywordSearch(query);
+    }, 250);
+  }
+  async runKeywordSearch(query) {
+    try {
+      const found = await this.api.listItems({ keyword: query, limit: this.fetchLimit });
+      const added = found.filter((item) => !this.knownIds.has(item.id));
+      if (added.length === 0)
+        return;
+      for (const item of added)
+        this.knownIds.add(item.id);
+      this.allItems = this.allItems.concat(added);
+      this.refreshList();
+    } catch (error) {
+      console.error("[CMDS Eagle] Keyword search failed:", error);
+    }
+  }
+  /** Re-runs the suggester without re-entering the keyword search. */
+  refreshList() {
+    this.refreshing = true;
+    this.inputEl.dispatchEvent(new Event("input"));
+    this.refreshing = false;
+  }
   buildFilterUI() {
-    const promptEl = this.modalEl.querySelector(".prompt");
+    const promptEl = this.modalEl.classList.contains("prompt") ? this.modalEl : this.modalEl.querySelector(".prompt");
     if (!promptEl)
       return;
     this.filterContainer = createDiv({ cls: "cmdspace-eagle-filters" });
@@ -1303,13 +1377,15 @@ var EagleSearchModal = class extends import_obsidian2.FuzzySuggestModal {
       if (this.libraryNameEl && libraryName) {
         this.libraryNameEl.setText(`\u{1F4DA} ${libraryName}`);
       }
-      this.allItems = await this.api.listItems();
+      this.allItems = await this.api.listItems({ limit: this.fetchLimit });
+      this.capped = this.allItems.length >= this.fetchLimit;
+      this.knownIds = new Set(this.allItems.map((item) => item.id));
       if (this.libraryNameEl) {
         const count = this.allItems.length;
         const libraryText = libraryName ? `\u{1F4DA} ${libraryName}` : "\u{1F4DA} Eagle";
-        this.libraryNameEl.setText(`${libraryText} (${count.toLocaleString()} items)`);
+        this.libraryNameEl.setText(this.capped ? `${libraryText} (${count.toLocaleString()}+ items \u2014 type to search the rest)` : `${libraryText} (${count.toLocaleString()} items)`);
       }
-      this.inputEl.dispatchEvent(new Event("input"));
+      this.refreshList();
     } catch (error) {
       console.error("Failed to load Eagle items:", error);
       new import_obsidian2.Notice("Failed to load Eagle items. Check console for details.");
@@ -1778,6 +1854,13 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("Search & embed").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Include metadata card").setDesc('Add the block metadata card when inserting an Eagle link. Embeds are governed by "What goes into the note" above.').addToggle((toggle) => toggle.setValue(this.plugin.settings.insertThumbnail).onChange(async (value) => {
       this.plugin.settings.insertThumbnail = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("Items to pre-load for search").setDesc("How many items the search modal loads up front. Beyond this, typing falls back to Eagle's own keyword search, so nothing is unreachable. Eagle's default of 200 is too low for most libraries.").addText((text) => text.setPlaceholder("5000").setValue(String(this.plugin.settings.searchFetchLimit)).onChange(async (value) => {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed) || parsed < 1)
+        return;
+      this.plugin.settings.searchFetchLimit = parsed;
       await this.plugin.saveSettings();
     }));
     this.renderSearchFiltersSettings(containerEl);
@@ -3751,7 +3834,7 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
     }
   }
   async saveImageLocally(file, editor) {
-    var _a, _b, _c;
+    var _a, _b;
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
       new import_obsidian5.Notice("No active file");
@@ -3763,19 +3846,11 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
       const filename = `${timestamp}-${file.name}`;
       const vault = this.app.vault;
       const attachmentFolder = ((_a = vault.getConfig) == null ? void 0 : _a.call(vault, "attachmentFolderPath")) || "";
-      let targetPath;
-      if (attachmentFolder === "./") {
-        const parentFolder = ((_b = activeFile.parent) == null ? void 0 : _b.path) || "";
-        targetPath = parentFolder ? `${parentFolder}/${filename}` : filename;
-      } else if (attachmentFolder.startsWith("./")) {
-        const parentFolder = ((_c = activeFile.parent) == null ? void 0 : _c.path) || "";
-        const relativeFolder = attachmentFolder.slice(2);
-        targetPath = parentFolder ? `${parentFolder}/${relativeFolder}/${filename}` : `${relativeFolder}/${filename}`;
-      } else if (attachmentFolder) {
-        targetPath = `${attachmentFolder}/${filename}`;
-      } else {
-        targetPath = filename;
-      }
+      const targetPath = resolveAttachmentPath(
+        attachmentFolder,
+        ((_b = activeFile.parent) == null ? void 0 : _b.path) || "",
+        filename
+      );
       const folderPath = targetPath.substring(0, targetPath.lastIndexOf("/"));
       if (folderPath) {
         const folderExists = await this.app.vault.adapter.exists(folderPath);

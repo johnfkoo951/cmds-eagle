@@ -38,6 +38,13 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	private activeFileTypes: Set<string>;
 	private filterContainer: HTMLElement | null = null;
 	private libraryNameEl: HTMLElement | null = null;
+	private fetchLimit: number;
+	/** True when the library holds more items than the pre-load cap. */
+	private capped = false;
+	private knownIds = new Set<string>();
+	private keywordTimer: number | null = null;
+	/** Guards the synthetic 'input' event we fire to refresh the list. */
+	private refreshing = false;
 
 	constructor(app: App, deps: EagleSearchModalDeps) {
 		super(app);
@@ -47,6 +54,7 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 		this.buildEmbed = deps.buildEmbed;
 		this.activeScopes = new Set(settings.searchScope);
 		this.activeFileTypes = new Set(settings.searchFileTypes);
+		this.fetchLimit = settings.searchFetchLimit || 5000;
 		this.setPlaceholder('Search Eagle items...');
 		this.setInstructions([
 			{ command: '↑↓', purpose: 'navigate' },
@@ -58,11 +66,63 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 	async onOpen(): Promise<void> {
 		void super.onOpen();
 		this.buildFilterUI();
+		this.inputEl.addEventListener('input', () => this.scheduleKeywordSearch());
 		await this.loadItems();
 	}
 
+	onClose(): void {
+		if (this.keywordTimer !== null) window.clearTimeout(this.keywordTimer);
+		super.onClose();
+	}
+
+	/**
+	 * Ask Eagle to search, debounced.
+	 *
+	 * The pre-loaded set is capped, and fuzzy matching only ever sees what was
+	 * pre-loaded — which is why search used to miss most of a large library.
+	 * Eagle's own keyword search covers everything, so its hits are merged in as
+	 * the user types and anything new refreshes the list.
+	 */
+	private scheduleKeywordSearch(): void {
+		if (this.refreshing) return;
+		if (this.keywordTimer !== null) window.clearTimeout(this.keywordTimer);
+
+		const query = this.inputEl.value.trim();
+		if (query.length < 2) return;
+
+		this.keywordTimer = window.setTimeout(() => {
+			void this.runKeywordSearch(query);
+		}, 250);
+	}
+
+	private async runKeywordSearch(query: string): Promise<void> {
+		try {
+			const found = await this.api.listItems({ keyword: query, limit: this.fetchLimit });
+			const added = found.filter(item => !this.knownIds.has(item.id));
+			if (added.length === 0) return;
+
+			for (const item of added) this.knownIds.add(item.id);
+			this.allItems = this.allItems.concat(added);
+			this.refreshList();
+		} catch (error) {
+			console.error('[CMDS Eagle] Keyword search failed:', error);
+		}
+	}
+
+	/** Re-runs the suggester without re-entering the keyword search. */
+	private refreshList(): void {
+		this.refreshing = true;
+		this.inputEl.dispatchEvent(new Event('input'));
+		this.refreshing = false;
+	}
+
 	private buildFilterUI(): void {
-		const promptEl = this.modalEl.querySelector('.prompt');
+		// SuggestModal's own modalEl carries the `prompt` class — it is not a
+		// descendant. Looking for a child `.prompt` found nothing and returned
+		// early, so the scope filters, type filters and item count never rendered.
+		const promptEl = this.modalEl.classList.contains('prompt')
+			? this.modalEl
+			: this.modalEl.querySelector('.prompt');
 		if (!promptEl) return;
 
 		this.filterContainer = createDiv({ cls: 'cmdspace-eagle-filters' });
@@ -195,15 +255,21 @@ export class EagleSearchModal extends FuzzySuggestModal<EagleItem> {
 				this.libraryNameEl.setText(`📚 ${libraryName}`);
 			}
 
-			this.allItems = await this.api.listItems();
-			
+			// Without an explicit limit Eagle returns only its default 200 items,
+			// so search silently saw a fraction of the library.
+			this.allItems = await this.api.listItems({ limit: this.fetchLimit });
+			this.capped = this.allItems.length >= this.fetchLimit;
+			this.knownIds = new Set(this.allItems.map(item => item.id));
+
 			if (this.libraryNameEl) {
 				const count = this.allItems.length;
 				const libraryText = libraryName ? `📚 ${libraryName}` : '📚 Eagle';
-				this.libraryNameEl.setText(`${libraryText} (${count.toLocaleString()} items)`);
+				this.libraryNameEl.setText(this.capped
+					? `${libraryText} (${count.toLocaleString()}+ items — type to search the rest)`
+					: `${libraryText} (${count.toLocaleString()} items)`);
 			}
-			
-			this.inputEl.dispatchEvent(new Event('input'));
+
+			this.refreshList();
 		} catch (error) {
 			console.error('Failed to load Eagle items:', error);
 			new Notice('Failed to load Eagle items. Check console for details.');

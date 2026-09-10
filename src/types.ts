@@ -290,6 +290,12 @@ export interface CMDSPACEEagleSettings {
 	activeCloudProvider: CloudProviderType;
 	searchScope: SearchScope[];
 	searchFileTypes: string[];
+	/**
+	 * How many items the search modal pre-loads. Eagle's own default is 200, which
+	 * silently hid most of a library from search. Beyond this cap the modal falls
+	 * back to Eagle's server-side keyword search, so nothing is unreachable.
+	 */
+	searchFetchLimit: number;
 	cloudProviders: {
 		r2: R2ProviderConfig;
 		s3: S3ProviderConfig;
@@ -342,6 +348,7 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	activeCloudProvider: 'imghippo',
 	searchScope: ['name', 'tags'],
 	searchFileTypes: [...SUPPORTED_IMAGE_EXTENSIONS],
+	searchFetchLimit: 5000,
 	cloudProviders: {
 		r2: {
 			type: 'r2',
