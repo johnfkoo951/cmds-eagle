@@ -2,7 +2,33 @@
 
 Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your vault.
 
-## What's New
+## What's New in 1.8.0
+
+### Multiple Eagle libraries
+
+Eagle opens one library at a time, so importing into another one means switching Eagle to it and
+switching back — about a second each way. Set this up under **Settings → Eagle libraries**:
+
+| Target library | Behaviour |
+|---|---|
+| Currently open library (default) | Never switches. Identical to 1.7.x. |
+| Always a specific library | Switches to it for every import, then restores. |
+| Ask every time | Prompts, so one note can hold assets from several libraries. |
+
+If you switch libraries in Eagle yourself while an import is running, your choice wins — the plugin
+checks before restoring and leaves Eagle where you put it.
+
+### Per-library folders
+
+Imports can land in a folder rather than the library root. Folder ids belong to their library, so each
+library remembers its own default folder. **Target folder** can also be set to *Ask every time*, which
+opens a picker that searches full paths (`proj/jazz` finds `Projects/Jazz Blend`) and can create a
+folder inline — type `Inbox/2026` to create `2026` under `Inbox`.
+
+Eagle assigns folders at import time only: its API cannot move an item between folders afterwards. So
+the target is chosen up front, and re-filing means re-importing.
+
+### Capture and link modes
 
 Pasting into Eagle previously left a copy in the vault as well, and the reference that was inserted did
 not survive a resync or a move to a second machine. This version changes three things:
@@ -10,8 +36,17 @@ not survive a resync or a move to a second machine. This version changes three t
 | | Before | Now |
 |---|---|---|
 | Staged copy under `.eagle-temp/` | written on every paste, never deleted — the original ends up in both Eagle and the vault | removed once Eagle confirms the import |
-| Inserted path | absolute `file://` into the Eagle library — breaks when a cloud mount reconnects, on other devices, and when the library is dehydrated | vault-relative thumbnail + `eagle://` deep link |
+| Inserted path | absolute `file://` into the Eagle library, with no alternative | still the default (`cmds-eagle`), but `photo-info` now offers a vault-relative thumbnail + `eagle://` deep link that survives a resync and renders on other devices |
 | Thumbnail wait | hardcoded `delay(1000)`; large files fall back to a link to the temp file, which is then orphaned | exponential-backoff polling, then a deep link — never a machine-local path |
+
+Existing installs keep their current behaviour: `linkMode` defaults to `cmds-eagle`, so nothing changes
+until you pick another mode.
+
+> **Deleting in Eagle removes the image from your notes.** That is the intent of the `cmds-eagle`
+> modes — Eagle is the source of truth. Be aware that the image may keep rendering for a while after
+> deletion: Obsidian serves it from memory until the window reloads. Run
+> `Verify Eagle references in current note` to see the real state. Choose `photo-info` instead if you
+> want notes to survive deletions in Eagle.
 
 ### Link modes
 
@@ -69,6 +104,8 @@ does the same for one note — try that first. Both ask for confirmation and rep
 ## Features
 
 - **Search & Embed**: Search Eagle library and embed images directly into notes
+- **Multiple libraries**: Import into any known Eagle library — fixed, or chosen per import
+- **Folder targeting**: Send imports to a per-library default folder, or pick (or create) one each time
 - **Cloud Upload**: Upload images to cloud storage (ImgHippo, Cloudflare R2, Amazon S3, WebDAV)
 - **Paste/Drop Integration**: Automatically handle pasted or dropped images
 - **Batch Convert**: Convert all local images in a note to cloud URLs
@@ -178,7 +215,10 @@ Requires the [Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugi
 
 ## Settings
 
-Configure your preferred cloud provider and search defaults.
+**Eagle libraries** — target library and folder, per-library default folders, and `Scan Eagle` to
+detect the libraries Eagle knows about.
+
+Below that, configure your preferred cloud provider and search defaults.
 
 
 ![Settings](assets/CMDS-eagle6.png)
@@ -205,7 +245,9 @@ Configure your preferred cloud provider and search defaults.
 | `Convert cross-platform image paths in current note` | Convert Mac/Windows paths |
 | `Move this note's local images into Eagle` | Import this note's images, rewrite references, trash the vault copies |
 | `Move all local images in the vault into Eagle` | Same, across the whole vault |
-| `Verify Eagle links in current note` | Report `eagle://` links whose item no longer exists |
+| `Switch Eagle library` | Change the library Eagle has open, from within the vault |
+| `Set default Eagle folder for the open library` | Choose or create the folder imports land in |
+| `Verify Eagle references in current note` | Report references whose file is missing on disk or whose item is gone from Eagle, across every library the note uses |
 
 ## License
 

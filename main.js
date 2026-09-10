@@ -2733,7 +2733,7 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
     });
     this.addCommand({
       id: "verify-eagle-links",
-      name: "Verify Eagle links in current note",
+      name: "Verify Eagle references in current note",
       callback: async () => {
         await this.verifyEagleLinks();
       }

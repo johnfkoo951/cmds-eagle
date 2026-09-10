@@ -183,7 +183,7 @@ export default class CMDSPACELinkEagle extends Plugin {
 
 		this.addCommand({
 			id: 'verify-eagle-links',
-			name: 'Verify Eagle links in current note',
+			name: 'Verify Eagle references in current note',
 			callback: async () => {
 				await this.verifyEagleLinks();
 			},
