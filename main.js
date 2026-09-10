@@ -219,6 +219,45 @@ function upsertLibraryProfile(libraries, profile) {
   next[index] = { ...next[index], ...normalized };
   return next;
 }
+var FILE_EMBED = /file:\/\/(\/[^)\s"']*?\.library)\/images\/([A-Za-z0-9]+)\.info\/([^)\s"']+)/g;
+var DEEPLINK = /eagle:\/\/item\/([A-Za-z0-9]+)/g;
+function decodePercent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
+function parseEagleReferences(content) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const match of content.matchAll(FILE_EMBED)) {
+    const libraryPath = decodePercent(match[1]);
+    const id = match[2];
+    byId.set(id, {
+      id,
+      libraryPath,
+      filePath: `${libraryPath}/images/${id}.info/${decodePercent(match[3])}`
+    });
+  }
+  for (const match of content.matchAll(DEEPLINK)) {
+    const id = match[1];
+    if (!byId.has(id))
+      byId.set(id, { id });
+  }
+  return [...byId.values()];
+}
+function groupReferencesByLibrary(refs) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const ref of refs) {
+    const key = ref.libraryPath ? normalizeLibraryPath(ref.libraryPath) : "";
+    const bucket = grouped.get(key);
+    if (bucket)
+      bucket.push(ref);
+    else
+      grouped.set(key, [ref]);
+  }
+  return grouped;
+}
 
 // src/canonical.ts
 var CARD_SEPARATOR = " \xB7 ";
@@ -4050,35 +4089,90 @@ ${item.annotation ? `> | **Annotation** | ${item.annotation} |
    * Deleting an item in Eagle leaves the vault thumbnail behind and the
    * `eagle://` link dead. Nothing detects that on its own, so this reports it.
    */
+  /**
+   * Report which of a note's Eagle references still resolve.
+   *
+   * Two independent failures are possible and the old check saw neither
+   * reliably. A `file://` embed breaks when the FILE is gone — which is what
+   * actually blanks the image, and it stays invisible until the window reloads
+   * because Chromium serves the old bytes from memory. A deep link breaks when
+   * the ITEM is gone. And because item lookups only ever hit the open library,
+   * a note mixing two libraries used to report half its links as dead.
+   */
   async verifyEagleLinks() {
+    var _a;
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
       new import_obsidian5.Notice("No active file");
       return;
     }
-    const content = await this.app.vault.read(activeFile);
-    const ids = /* @__PURE__ */ new Set();
-    const linkRegex = /eagle:\/\/item\/([A-Za-z0-9]+)/g;
-    let match;
-    while ((match = linkRegex.exec(content)) !== null) {
-      ids.add(match[1]);
-    }
-    if (ids.size === 0) {
+    const refs = parseEagleReferences(await this.app.vault.read(activeFile));
+    if (refs.length === 0) {
       new import_obsidian5.Notice("No Eagle links in this note");
       return;
     }
-    const dead = [];
-    for (const id of ids) {
-      const item = await this.api.getItemInfo(id);
-      if (!item || item.isDeleted)
-        dead.push(id);
+    const missingFiles = [];
+    for (const ref of refs) {
+      if (!ref.filePath)
+        continue;
+      try {
+        await fsp.stat(ref.filePath);
+      } catch (e) {
+        missingFiles.push(ref.id);
+      }
     }
-    if (dead.length === 0) {
-      new import_obsidian5.Notice(`All ${ids.size} Eagle link(s) resolve`);
+    const active = await this.api.getActiveLibrary();
+    if (!active) {
+      new import_obsidian5.Notice("Eagle is not running \u2014 checked files on disk only");
+      this.reportVerification(refs, missingFiles, [], true);
       return;
     }
-    console.warn("[CMDS Eagle] Dead Eagle links:", dead);
-    new import_obsidian5.Notice(`${dead.length} of ${ids.size} Eagle link(s) no longer resolve \u2014 see console for ids`);
+    const grouped = groupReferencesByLibrary(refs);
+    const unknown = (_a = grouped.get("")) != null ? _a : [];
+    const libraries = [...grouped.keys()].filter(Boolean);
+    if (!libraries.includes(normalizeLibraryPath(active.path))) {
+      libraries.unshift(normalizeLibraryPath(active.path));
+    }
+    const resolved = /* @__PURE__ */ new Set();
+    const deadItems = [];
+    for (const libraryPath of libraries) {
+      const opened = await this.withLibraryOpen(libraryPath, async () => {
+        var _a2;
+        const candidates = [...(_a2 = grouped.get(libraryPath)) != null ? _a2 : [], ...unknown.filter((r) => !resolved.has(r.id))];
+        for (const ref of candidates) {
+          const item = await this.api.getItemInfo(ref.id);
+          if (item && !item.isDeleted)
+            resolved.add(ref.id);
+        }
+        return true;
+      });
+      if (!opened) {
+        console.warn("[CMDS Eagle] Could not open library for verification:", libraryPath);
+      }
+    }
+    for (const ref of refs) {
+      if (!resolved.has(ref.id))
+        deadItems.push(ref.id);
+    }
+    this.reportVerification(refs, missingFiles, deadItems, false);
+  }
+  reportVerification(refs, missingFiles, deadItems, filesOnly) {
+    const broken = /* @__PURE__ */ new Set([...missingFiles, ...deadItems]);
+    if (broken.size === 0) {
+      new import_obsidian5.Notice(`All ${refs.length} Eagle reference(s) resolve`);
+      return;
+    }
+    console.warn("[CMDS Eagle] Verification results", {
+      missingFiles,
+      deadItems,
+      note: "A missing file blanks the image; the old one may still show until Obsidian reloads."
+    });
+    const parts = [];
+    if (missingFiles.length > 0)
+      parts.push(`${missingFiles.length} embedded file(s) missing on disk`);
+    if (!filesOnly && deadItems.length > 0)
+      parts.push(`${deadItems.length} item(s) gone from Eagle`);
+    new import_obsidian5.Notice(`${broken.size} of ${refs.length} Eagle reference(s) broken \u2014 ${parts.join(", ")}. See console for ids.`, 1e4);
   }
   async offerToReplaceOtherReferences(originalFile, item, excludePosition) {
     const references = this.findAllReferencesToFile(originalFile);

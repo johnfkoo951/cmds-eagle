@@ -137,3 +137,65 @@ export function upsertLibraryProfile(
 	next[index] = { ...next[index], ...normalized };
 	return next;
 }
+
+/** An Eagle item referenced by a note, with whatever location the note revealed. */
+export interface EagleReference {
+	id: string;
+	/** Library the note points into — only `cmds-eagle*` modes embed an absolute path. */
+	libraryPath?: string;
+	/** Absolute path of the embedded original, decoded. */
+	filePath?: string;
+}
+
+const FILE_EMBED = /file:\/\/(\/[^)\s"']*?\.library)\/images\/([A-Za-z0-9]+)\.info\/([^)\s"']+)/g;
+const DEEPLINK = /eagle:\/\/item\/([A-Za-z0-9]+)/g;
+
+function decodePercent(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
+/**
+ * Every Eagle item a note refers to, merged by id.
+ *
+ * Notes carry two different kinds of reference and they fail in different ways:
+ * an `eagle://` deep link breaks when the ITEM is gone, while a `file://` embed
+ * breaks when the FILE is gone — and a file can vanish while Eagle still lists
+ * the item, or the reverse. The absolute path also tells us which library the
+ * item lives in, which is the only way to check an item without guessing.
+ */
+export function parseEagleReferences(content: string): EagleReference[] {
+	const byId = new Map<string, EagleReference>();
+
+	for (const match of content.matchAll(FILE_EMBED)) {
+		const libraryPath = decodePercent(match[1]);
+		const id = match[2];
+		byId.set(id, {
+			id,
+			libraryPath,
+			filePath: `${libraryPath}/images/${id}.info/${decodePercent(match[3])}`,
+		});
+	}
+
+	for (const match of content.matchAll(DEEPLINK)) {
+		const id = match[1];
+		if (!byId.has(id)) byId.set(id, { id });
+	}
+
+	return [...byId.values()];
+}
+
+/** Group references by the library they are known to live in; `''` keys the unknown ones. */
+export function groupReferencesByLibrary(refs: EagleReference[]): Map<string, EagleReference[]> {
+	const grouped = new Map<string, EagleReference[]>();
+	for (const ref of refs) {
+		const key = ref.libraryPath ? normalizeLibraryPath(ref.libraryPath) : '';
+		const bucket = grouped.get(key);
+		if (bucket) bucket.push(ref);
+		else grouped.set(key, [ref]);
+	}
+	return grouped;
+}

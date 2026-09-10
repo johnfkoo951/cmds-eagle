@@ -10,6 +10,8 @@ import {
 	resolveDefaultFolder,
 	libraryProfileFor,
 	upsertLibraryProfile,
+	parseEagleReferences,
+	groupReferencesByLibrary,
 } from '../src/eagle-library.ts';
 import type { EagleFolder, EagleLibraryProfile } from '../src/types.ts';
 
@@ -207,4 +209,49 @@ test('a library is never split in two by a trailing slash', () => {
 
 	assert.equal(libraryProfileFor(merged, '/Users/x/Photo.library/')?.defaultFolderId, 'F1');
 	assert.equal(libraryProfileFor([slashed], '/Users/x/Photo.library')?.name, 'Photo');
+});
+
+// A real note produced by linkMode 'cmds-eagle', with items from TWO libraries.
+const NOTE = `# Test
+
+![CleanShot A](file:///Users/yohankoo/CMDS%20Sync/70.%20CMDS%20Shared%20Library/CMDS%20Design%20Library.library/images/MTURWD7WYRCV7.info/CleanShot%202026-09-10%20at%2009.12.15%402x.png)
+> \`png\` · 119.0 KB · 912×684 · [Open in Eagle](eagle://item/MTURWD7WYRCV7)
+
+![CleanShot B](file:///Users/yohankoo/YHN/Yohan%20Koo%20Photo.library/images/MTUS2SSBQVP8V.info/CleanShot%202026-09-10%20at%2009.17.19%402x.png)
+> \`png\` · 171.3 KB · 534×414 · [Open in Eagle](eagle://item/MTUS2SSBQVP8V)
+
+[link only](eagle://item/ZZZLINKONLY01)
+`;
+
+test('parseEagleReferences finds every item once, decoding percent-escapes', () => {
+	const refs = parseEagleReferences(NOTE);
+	assert.deepEqual(refs.map(r => r.id).sort(), ['MTURWD7WYRCV7', 'MTUS2SSBQVP8V', 'ZZZLINKONLY01']);
+
+	const a = refs.find(r => r.id === 'MTURWD7WYRCV7');
+	assert.equal(a?.libraryPath, '/Users/yohankoo/CMDS Sync/70. CMDS Shared Library/CMDS Design Library.library');
+	assert.equal(
+		a?.filePath,
+		'/Users/yohankoo/CMDS Sync/70. CMDS Shared Library/CMDS Design Library.library/images/MTURWD7WYRCV7.info/CleanShot 2026-09-10 at 09.12.15@2x.png'
+	);
+});
+
+test('an item embedded and deep-linked is not counted twice', () => {
+	assert.equal(parseEagleReferences(NOTE).filter(r => r.id === 'MTURWD7WYRCV7').length, 1);
+});
+
+test('a deep-link-only item carries no library or file path', () => {
+	const ref = parseEagleReferences(NOTE).find(r => r.id === 'ZZZLINKONLY01');
+	assert.equal(ref?.libraryPath, undefined);
+	assert.equal(ref?.filePath, undefined);
+});
+
+test('references group by library, with unknown ones under an empty key', () => {
+	const grouped = groupReferencesByLibrary(parseEagleReferences(NOTE));
+	assert.equal(grouped.size, 3);
+	assert.equal(grouped.get('/Users/yohankoo/YHN/Yohan Koo Photo.library')?.length, 1);
+	assert.equal(grouped.get('')?.length, 1, 'the deep-link-only item has no known library');
+});
+
+test('parseEagleReferences returns nothing for a note with no Eagle content', () => {
+	assert.deepEqual(parseEagleReferences('# Plain\n\n![local](attachments/x.png)\n'), []);
 });
