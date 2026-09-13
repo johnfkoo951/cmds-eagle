@@ -157,7 +157,7 @@ and enable the plugin in Obsidian settings.
 ## Requirements
 
 - [Eagle](https://eagle.cool) app running locally
-- Obsidian 1.5.0+
+- Obsidian 1.6.6+
 
 ## Usage
 

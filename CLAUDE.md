@@ -30,7 +30,7 @@ src/
 ## Key Info
 
 - **ID**: `cmds-eagle`
-- **Version**: 1.6.0
+- **Version**: 1.8.3
 - **Desktop only**: yes (Eagle REST API is local)
 - **GitHub**: `johnfkoo951/cmds-eagle`
 - **Naming rule**: all CMDS plugins use `cmds-` prefix

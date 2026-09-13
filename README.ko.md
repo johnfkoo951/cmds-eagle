@@ -159,7 +159,7 @@ npm test                          # 표준 출력 형식 계약 테스트입니�
 ## 요구 사항
 
 - 로컬에서 실행 중인 [Eagle](https://eagle.cool) 앱
-- Obsidian 1.5.0 이상
+- Obsidian 1.6.6 이상
 
 ## 사용법
 
