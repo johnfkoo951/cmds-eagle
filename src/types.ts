@@ -150,6 +150,16 @@ export type CrossPlatformConversionMode = 'modify-source' | 'render-only';
  * A remembered Eagle library. Eagle opens exactly one library at a time, so
  * targeting another one means switching to it and switching back.
  */
+/** Outcome of a Scan Eagle run, as reported to the settings tab. */
+export interface LibraryScanResult {
+	/** Profiles known after the scan. */
+	total: number;
+	/** Stored profiles whose library is gone but which were kept. */
+	missing: string[];
+	/** Profiles removed because auto-prune was on. */
+	pruned: string[];
+}
+
 export interface EagleLibraryProfile {
 	/** Absolute path to the `.library` bundle. This is the identity key. */
 	path: string;
@@ -316,6 +326,12 @@ export interface CMDSPACEEagleSettings {
 	restoreLibraryAfterImport: boolean;
 	/** Give up waiting for a switched-to library to report as open. */
 	librarySwitchTimeoutMs: number;
+	/**
+	 * Drop profiles for libraries Eagle no longer knows and that are gone from
+	 * disk, as part of Scan Eagle. Off by default: a profile holds the user's
+	 * default-folder choice, so removal stays a deliberate act.
+	 */
+	pruneMissingLibrariesOnScan: boolean;
 	folderTargetMode: FolderTargetMode;
 }
 
@@ -401,6 +417,7 @@ export const DEFAULT_SETTINGS: CMDSPACEEagleSettings = {
 	defaultLibraryPath: '',
 	restoreLibraryAfterImport: true,
 	librarySwitchTimeoutMs: 15000,
+	pruneMissingLibrariesOnScan: false,
 	folderTargetMode: 'library-default',
 	enableCrossPlatform: false,
 	autoConvertCrossPlatformPaths: false,

@@ -1,7 +1,7 @@
 {
 	"id": "cmds-eagle",
 	"name": "CMDS Eagle",
-	"version": "1.8.3",
+	"version": "1.8.4",
 	"minAppVersion": "1.6.6",
 	"description": "Connect Eagle asset library to your vault. Search and embed assets, import into a chosen library and folder, and upload to cloud (ImgHippo, R2, S3, WebDAV).",
 	"author": "Yohan Koo",

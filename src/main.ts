@@ -19,6 +19,7 @@ import {
 	FlatEagleFolder,
 	PlatformType,
 	SUPPORTED_IMAGE_EXTENSIONS,
+	LibraryScanResult,
 } from './types';
 import {
 	flattenFolders,
@@ -27,6 +28,8 @@ import {
 	normalizeLibraryPath,
 	parseEagleReferences,
 	groupReferencesByLibrary,
+	missingLibraryPaths,
+	removeLibraryProfile,
 	resolveDefaultFolder,
 	upsertLibraryProfile,
 } from './eagle-library';
@@ -518,8 +521,12 @@ export default class CMDSPACELinkEagle extends Plugin {
 	 * Learn about every library Eagle remembers, plus the one open now, and keep a
 	 * profile for each. Profiles are additive — an existing default folder is never
 	 * overwritten by a rescan.
+	 *
+	 * A rescan also re-checks which stored profiles still point at a real library,
+	 * but removal stays opt-in (`pruneMissingLibrariesOnScan`) or manual: the
+	 * profile holds a default-folder choice worth more than a tidy list.
 	 */
-	async detectLibraries(): Promise<number> {
+	async detectLibraries(): Promise<LibraryScanResult> {
 		const active = await this.api.getActiveLibrary();
 		const history = await this.api.listLibraryHistory();
 
@@ -546,8 +553,68 @@ export default class CMDSPACELinkEagle extends Plugin {
 			});
 		}
 
+		this.missingLibraries = await this.findMissingLibraries(active ? history : null);
+		if (this.settings.pruneMissingLibrariesOnScan && this.missingLibraries.length > 0) {
+			const pruned = [...this.missingLibraries];
+			for (const path of pruned) this.forgetLibraryProfile(path);
+			this.missingLibraries = [];
+			await this.saveSettings();
+			return { total: this.settings.libraries.length, missing: [], pruned };
+		}
+
 		await this.saveSettings();
-		return this.settings.libraries.length;
+		return {
+			total: this.settings.libraries.length,
+			missing: [...this.missingLibraries],
+			pruned: [],
+		};
+	}
+
+	/**
+	 * Stored profiles whose library is gone, as of the last scan. Held in memory
+	 * rather than settings so a stale verdict can never outlive the session that
+	 * produced it — the settings tab reads it to badge rows.
+	 */
+	missingLibraries: string[] = [];
+
+	/**
+	 * `null` history means Eagle could not be asked, which
+	 * `classifyLibraryPresence` turns into `unverified` — nothing gets flagged.
+	 */
+	private async findMissingLibraries(history: string[] | null): Promise<string[]> {
+		const present = new Set<string>();
+		await Promise.all(this.settings.libraries.map(async library => {
+			if (await this.pathExists(library.path)) present.add(normalizeLibraryPath(library.path));
+		}));
+		return missingLibraryPaths(
+			this.settings.libraries,
+			history,
+			path => present.has(normalizeLibraryPath(path))
+		);
+	}
+
+	/** Drop a stored profile, plus any setting that pointed at it. */
+	private forgetLibraryProfile(libraryPath: string): void {
+		const target = normalizeLibraryPath(libraryPath);
+		this.settings.libraries = removeLibraryProfile(this.settings.libraries, target);
+		this.missingLibraries = this.missingLibraries.filter(path => path !== target);
+		if (normalizeLibraryPath(this.settings.defaultLibraryPath) === target) {
+			this.settings.defaultLibraryPath = '';
+		}
+	}
+
+	/** Settings-tab action: remove one library the user no longer wants listed. */
+	async removeLibrary(libraryPath: string): Promise<void> {
+		this.forgetLibraryProfile(libraryPath);
+		await this.saveSettings();
+	}
+
+	/** Settings-tab action: remove every library the last scan found missing. */
+	async removeMissingLibraries(): Promise<number> {
+		const targets = [...this.missingLibraries];
+		for (const path of targets) this.forgetLibraryProfile(path);
+		await this.saveSettings();
+		return targets.length;
 	}
 
 	/**

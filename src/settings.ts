@@ -15,8 +15,10 @@ import {
 	ComputerProfile,
 	CrossPlatformConversionMode,
 	PlatformType,
+	LibraryScanResult,
 } from './types';
 import { findCurrentComputer, isAbsolutePath, profileLibraryRoot } from './platform-paths';
+import { normalizeLibraryPath } from './eagle-library';
 
 // Shown under the mode dropdown so the trade-off is visible at the point of choice.
 const LINK_MODE_DESCRIPTIONS: Record<LinkMode, string> = {
@@ -36,6 +38,14 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: CMDSPACELinkEagle) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	/** One line that says what a scan changed, so the Notice is worth reading. */
+	private describeScan(result: LibraryScanResult): string {
+		const parts = [`Known libraries: ${result.total}`];
+		if (result.pruned.length > 0) parts.push(`removed ${result.pruned.length} missing`);
+		else if (result.missing.length > 0) parts.push(`${result.missing.length} missing`);
+		return parts.join(' · ');
 	}
 
 	display(): void {
@@ -158,14 +168,24 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
+			.setName('Remove missing libraries on scan')
+			.setDesc('Scan Eagle drops libraries Eagle no longer lists that are also gone from disk. Off: they stay, marked Missing, for you to remove.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.pruneMissingLibrariesOnScan)
+				.onChange(async (value) => {
+					this.plugin.settings.pruneMissingLibrariesOnScan = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Detect libraries')
 			.addButton(button => button
 				.setButtonText(SCAN_EAGLE_LABEL)
 				.onClick(async () => {
 					button.setDisabled(true).setButtonText('Scanning…');
 					try {
-						const count = await this.plugin.detectLibraries();
-						new Notice(`Known libraries: ${count}`);
+						const result = await this.plugin.detectLibraries();
+						new Notice(this.describeScan(result));
 						this.display();
 					} catch (error) {
 						console.error('Failed to detect libraries:', error);
@@ -175,20 +195,47 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 					}
 				}));
 
+		if (this.plugin.missingLibraries.length > 0) {
+			new Setting(containerEl)
+				.setName('Missing libraries')
+				.setDesc(`${this.plugin.missingLibraries.length} stored ${this.plugin.missingLibraries.length === 1 ? 'library is' : 'libraries are'} gone from Eagle and from disk. Removing them also clears their saved default folder.`)
+				.addButton(button => button
+					.setButtonText('Remove all missing')
+					.setWarning()
+					.onClick(async () => {
+						const removed = await this.plugin.removeMissingLibraries();
+						new Notice(`Removed ${removed} missing ${removed === 1 ? 'library' : 'libraries'}`);
+						this.display();
+					}));
+		}
+
 		for (const profile of this.plugin.settings.libraries) {
+			const isMissing = this.plugin.missingLibraries.includes(
+				normalizeLibraryPath(profile.path)
+			);
 			const description = createFragment(fragment => {
+				if (isMissing) {
+					fragment.createDiv({
+						text: 'Missing — Eagle no longer lists it and the folder is gone.',
+						cls: 'cmds-eagle-missing-note',
+					});
+				}
 				fragment.createDiv({ text: `Default folder: ${profile.defaultFolderPath || 'library root'}` });
 				fragment.createDiv({ text: profile.path, cls: 'setting-item-description' });
 			});
 			const librarySetting = new Setting(containerEl)
 				.setName(profile.name)
-				.setDesc(description)
-				.addButton(button => button
+				.setDesc(description);
+			if (isMissing) {
+				librarySetting.settingEl.addClass('cmds-eagle-library-missing');
+			} else {
+				librarySetting.addButton(button => button
 					.setButtonText('Choose folder')
 					.onClick(async () => {
 						await this.plugin.setDefaultFolderForLibrary(profile.path);
 						this.display();
 					}));
+			}
 			if (profile.defaultFolderId) {
 				librarySetting.addExtraButton(button => button
 					.setIcon('x')
@@ -198,6 +245,13 @@ export class CMDSPACEEagleSettingTab extends PluginSettingTab {
 						this.display();
 					}));
 			}
+			librarySetting.addExtraButton(button => button
+				.setIcon('trash-2')
+				.setTooltip(`Remove ${profile.name} from this list`)
+				.onClick(async () => {
+					await this.plugin.removeLibrary(profile.path);
+					this.display();
+				}));
 		}
 
 		if (this.plugin.settings.libraries.length === 0) {

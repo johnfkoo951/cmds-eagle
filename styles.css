@@ -228,3 +228,12 @@
 	padding: 4px 8px;
 	cursor: pointer;
 }
+
+.cmds-eagle-library-missing .setting-item-name {
+	opacity: 0.6;
+	text-decoration: line-through;
+}
+
+.cmds-eagle-missing-note {
+	color: var(--text-error);
+}

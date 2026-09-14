@@ -138,6 +138,73 @@ export function upsertLibraryProfile(
 	return next;
 }
 
+/** Remove a profile by path. Returns a new array; unknown paths are a no-op. */
+export function removeLibraryProfile(
+	libraries: EagleLibraryProfile[],
+	path: string
+): EagleLibraryProfile[] {
+	const target = normalizeLibraryPath(path);
+	return libraries.filter(library => normalizeLibraryPath(library.path) !== target);
+}
+
+/**
+ * `unverified` is not a soft `missing` — it means we had no basis to judge
+ * (Eagle was closed, so its history could not be read) and the caller must
+ * neither flag nor prune the profile.
+ */
+export type LibraryPresence = 'present' | 'missing' | 'unverified';
+
+export interface LibraryFacts {
+	/** Eagle still lists the path in `/api/library/history`. `null` = history unavailable. */
+	inEagleHistory: boolean | null;
+	/** The `.library` bundle resolves on disk right now. */
+	existsOnDisk: boolean;
+}
+
+/**
+ * Decide whether a stored profile still refers to a real library.
+ *
+ * ── The trade-off this encodes ───────────────────────────────────────────────
+ * A profile carries the user's default-folder choice, so calling a library
+ * `missing` too eagerly risks discarding configuration for a library that is
+ * merely offline. Two situations look identical from here:
+ *
+ *   • renamed or deleted  → gone for good, should be removable
+ *   • external / network volume unmounted → will come back, must be kept
+ *
+ * Current policy is the strict one: BOTH signals must agree. Eagle drops a
+ * library from its history when the bundle is renamed or deleted, but keeps
+ * remembering one whose drive is simply detached — so requiring
+ * `!inEagleHistory && !existsOnDisk` treats an unmounted volume as present.
+ *
+ * Loosen it to `!existsOnDisk` alone if you never keep libraries on removable
+ * or network volumes: detection becomes immediate, at the cost of flagging an
+ * unmounted library as missing.
+ */
+export function classifyLibraryPresence(facts: LibraryFacts): LibraryPresence {
+	if (facts.inEagleHistory === null) return 'unverified';
+	if (!facts.inEagleHistory && !facts.existsOnDisk) return 'missing';
+	return 'present';
+}
+
+/**
+ * Paths of every stored profile that `classifyLibraryPresence` calls missing.
+ * `existsOnDisk` is injected so this stays pure and testable without fs.
+ */
+export function missingLibraryPaths(
+	libraries: EagleLibraryProfile[],
+	eagleHistory: string[] | null,
+	existsOnDisk: (path: string) => boolean
+): string[] {
+	const known = eagleHistory === null ? null : new Set(eagleHistory.map(normalizeLibraryPath));
+	return libraries
+		.filter(library => classifyLibraryPresence({
+			inEagleHistory: known === null ? null : known.has(normalizeLibraryPath(library.path)),
+			existsOnDisk: existsOnDisk(library.path),
+		}) === 'missing')
+		.map(library => normalizeLibraryPath(library.path));
+}
+
 /** An Eagle item referenced by a note, with whatever location the note revealed. */
 export interface EagleReference {
 	id: string;

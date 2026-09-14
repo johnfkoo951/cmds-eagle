@@ -4,6 +4,19 @@
 
 Obsidian plugin to connect [Eagle](https://eagle.cool) asset library with your vault.
 
+## What's new in 1.8.4
+
+**A renamed or deleted library stayed in the list for good.** Detection only ever added profiles, so a
+library you renamed in Eagle kept its old entry in settings — pointing at a path that no longer exists,
+with no way to remove it. Every library row now has a remove button, and a library Eagle has forgotten
+that is also gone from disk is marked `Missing` with a `Remove all missing` action above the list.
+
+Removal stays deliberate by default, because a profile holds your saved default folder. A library is
+only called missing when **both** signals agree: Eagle no longer lists it *and* the bundle is gone from
+disk. An external or network volume that is merely unmounted is still remembered by Eagle, so it stays
+listed and keeps its settings. When Eagle is not running nothing is judged at all. Turn on
+`Remove missing libraries on scan` if you would rather have `Scan Eagle` clean up on its own.
+
 ## What's new in 1.8.2
 
 **Search saw only a fraction of your library.** Eagle returns 200 items when no limit is given, and the
@@ -243,12 +256,17 @@ search still uses the library Eagle currently has open.
 | `Target folder` | `Each library's default folder` uses that library's saved folder; `Ask every time` opens a folder picker with creation support; `Library root` imports without a folder. |
 | `Switch back after import` | When enabled, restores the previously open library after importing into another library. Disable it to leave the target open. |
 | `Library switch timeout` | Maximum wait for a switch, in milliseconds; minimum 1000. A switch normally takes about one second. |
-| `Scan Eagle` | Under `Detect libraries`, reads Eagle's known library history and the open library, adding profiles without overwriting saved default folders. |
+| `Scan Eagle` | Under `Detect libraries`, reads Eagle's known library history and the open library, adding profiles without overwriting saved default folders. It also re-checks which stored libraries still exist, marking the gone ones `Missing`. |
+| `Remove missing libraries on scan` | Off by default. When on, `Scan Eagle` removes libraries Eagle no longer lists that are also absent from disk, along with their saved default folder. When off they stay, marked `Missing`, for you to remove. |
 | `Items to pre-load for search` | How many items the search modal loads up front (default 5000). Past this, typing falls back to Eagle's own keyword search. Eagle's own default of 200 is too low for most libraries. |
 
 Folder ids are per-library: set defaults separately, using the library controls or
 `Set default Eagle folder for the open library`. If no default is set, imports use the library root;
 an unavailable saved folder also falls back to the root with a notice. Scan first if the library list is empty.
+
+Each library row carries a remove button that drops it from the list along with its saved default folder.
+Removing the library selected as `Default library` clears that selection. A removed library comes back on
+the next scan if Eagle still knows it, so removal is only permanent for a library that is really gone.
 
 Importing into a non-open library switches Eagle and, with `Switch back after import` enabled,
 switches back afterwards — approximately one second each way. If you switch to another library

@@ -130,6 +130,7 @@ var DEFAULT_SETTINGS = {
   defaultLibraryPath: "",
   restoreLibraryAfterImport: true,
   librarySwitchTimeoutMs: 15e3,
+  pruneMissingLibrariesOnScan: false,
   folderTargetMode: "library-default",
   enableCrossPlatform: false,
   autoConvertCrossPlatformPaths: false,
@@ -219,6 +220,24 @@ function upsertLibraryProfile(libraries, profile) {
   const next = [...libraries];
   next[index] = { ...next[index], ...normalized };
   return next;
+}
+function removeLibraryProfile(libraries, path) {
+  const target = normalizeLibraryPath(path);
+  return libraries.filter((library) => normalizeLibraryPath(library.path) !== target);
+}
+function classifyLibraryPresence(facts) {
+  if (facts.inEagleHistory === null)
+    return "unverified";
+  if (!facts.inEagleHistory && !facts.existsOnDisk)
+    return "missing";
+  return "present";
+}
+function missingLibraryPaths(libraries, eagleHistory, existsOnDisk) {
+  const known = eagleHistory === null ? null : new Set(eagleHistory.map(normalizeLibraryPath));
+  return libraries.filter((library) => classifyLibraryPresence({
+    inEagleHistory: known === null ? null : known.has(normalizeLibraryPath(library.path)),
+    existsOnDisk: existsOnDisk(library.path)
+  }) === "missing").map((library) => normalizeLibraryPath(library.path));
 }
 var FILE_EMBED = /file:\/\/(\/[^)\s"']*?\.library)\/images\/([A-Za-z0-9]+)\.info\/([^)\s"']+)/g;
 var DEEPLINK = /eagle:\/\/item\/([A-Za-z0-9]+)/g;
@@ -1708,6 +1727,15 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  /** One line that says what a scan changed, so the Notice is worth reading. */
+  describeScan(result) {
+    const parts = [`Known libraries: ${result.total}`];
+    if (result.pruned.length > 0)
+      parts.push(`removed ${result.pruned.length} missing`);
+    else if (result.missing.length > 0)
+      parts.push(`${result.missing.length} missing`);
+    return parts.join(" \xB7 ");
+  }
   display() {
     const { containerEl } = this;
     containerEl.empty();
@@ -1773,11 +1801,15 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.plugin.settings.librarySwitchTimeoutMs = timeout;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian3.Setting(containerEl).setName("Remove missing libraries on scan").setDesc("Scan Eagle drops libraries Eagle no longer lists that are also gone from disk. Off: they stay, marked Missing, for you to remove.").addToggle((toggle) => toggle.setValue(this.plugin.settings.pruneMissingLibrariesOnScan).onChange(async (value) => {
+      this.plugin.settings.pruneMissingLibrariesOnScan = value;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian3.Setting(containerEl).setName("Detect libraries").addButton((button) => button.setButtonText(SCAN_EAGLE_LABEL).onClick(async () => {
       button.setDisabled(true).setButtonText("Scanning\u2026");
       try {
-        const count = await this.plugin.detectLibraries();
-        new import_obsidian3.Notice(`Known libraries: ${count}`);
+        const result = await this.plugin.detectLibraries();
+        new import_obsidian3.Notice(this.describeScan(result));
         this.display();
       } catch (error) {
         console.error("Failed to detect libraries:", error);
@@ -1786,21 +1818,46 @@ var CMDSPACEEagleSettingTab = class extends import_obsidian3.PluginSettingTab {
         button.setDisabled(false).setButtonText(SCAN_EAGLE_LABEL);
       }
     }));
+    if (this.plugin.missingLibraries.length > 0) {
+      new import_obsidian3.Setting(containerEl).setName("Missing libraries").setDesc(`${this.plugin.missingLibraries.length} stored ${this.plugin.missingLibraries.length === 1 ? "library is" : "libraries are"} gone from Eagle and from disk. Removing them also clears their saved default folder.`).addButton((button) => button.setButtonText("Remove all missing").setWarning().onClick(async () => {
+        const removed = await this.plugin.removeMissingLibraries();
+        new import_obsidian3.Notice(`Removed ${removed} missing ${removed === 1 ? "library" : "libraries"}`);
+        this.display();
+      }));
+    }
     for (const profile of this.plugin.settings.libraries) {
+      const isMissing = this.plugin.missingLibraries.includes(
+        normalizeLibraryPath(profile.path)
+      );
       const description = createFragment((fragment) => {
+        if (isMissing) {
+          fragment.createDiv({
+            text: "Missing \u2014 Eagle no longer lists it and the folder is gone.",
+            cls: "cmds-eagle-missing-note"
+          });
+        }
         fragment.createDiv({ text: `Default folder: ${profile.defaultFolderPath || "library root"}` });
         fragment.createDiv({ text: profile.path, cls: "setting-item-description" });
       });
-      const librarySetting = new import_obsidian3.Setting(containerEl).setName(profile.name).setDesc(description).addButton((button) => button.setButtonText("Choose folder").onClick(async () => {
-        await this.plugin.setDefaultFolderForLibrary(profile.path);
-        this.display();
-      }));
+      const librarySetting = new import_obsidian3.Setting(containerEl).setName(profile.name).setDesc(description);
+      if (isMissing) {
+        librarySetting.settingEl.addClass("cmds-eagle-library-missing");
+      } else {
+        librarySetting.addButton((button) => button.setButtonText("Choose folder").onClick(async () => {
+          await this.plugin.setDefaultFolderForLibrary(profile.path);
+          this.display();
+        }));
+      }
       if (profile.defaultFolderId) {
         librarySetting.addExtraButton((button) => button.setIcon("x").setTooltip("Clear default folder").onClick(async () => {
           await this.plugin.clearDefaultFolderForLibrary(profile.path);
           this.display();
         }));
       }
+      librarySetting.addExtraButton((button) => button.setIcon("trash-2").setTooltip(`Remove ${profile.name} from this list`).onClick(async () => {
+        await this.plugin.removeLibrary(profile.path);
+        this.display();
+      }));
     }
     if (this.plugin.settings.libraries.length === 0) {
       containerEl.createDiv({
@@ -2736,6 +2793,12 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
     super(...arguments);
     this.lastModifiedFile = null;
     this.attachedExcalidrawContainers = /* @__PURE__ */ new WeakSet();
+    /**
+     * Stored profiles whose library is gone, as of the last scan. Held in memory
+     * rather than settings so a stale verdict can never outlive the session that
+     * produced it — the settings tab reads it to badge rows.
+     */
+    this.missingLibraries = [];
   }
   async onload() {
     console.log("[CMDS Eagle] Loading plugin v1.6.0");
@@ -3117,6 +3180,10 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
    * Learn about every library Eagle remembers, plus the one open now, and keep a
    * profile for each. Profiles are additive — an existing default folder is never
    * overwritten by a rescan.
+   *
+   * A rescan also re-checks which stored profiles still point at a real library,
+   * but removal stays opt-in (`pruneMissingLibrariesOnScan`) or manual: the
+   * profile holds a default-folder choice worth more than a tidy list.
    */
   async detectLibraries() {
     const active = await this.api.getActiveLibrary();
@@ -3141,8 +3208,59 @@ var CMDSPACELinkEagle = class extends import_obsidian5.Plugin {
         defaultFolderPath: ""
       });
     }
+    this.missingLibraries = await this.findMissingLibraries(active ? history : null);
+    if (this.settings.pruneMissingLibrariesOnScan && this.missingLibraries.length > 0) {
+      const pruned = [...this.missingLibraries];
+      for (const path of pruned)
+        this.forgetLibraryProfile(path);
+      this.missingLibraries = [];
+      await this.saveSettings();
+      return { total: this.settings.libraries.length, missing: [], pruned };
+    }
     await this.saveSettings();
-    return this.settings.libraries.length;
+    return {
+      total: this.settings.libraries.length,
+      missing: [...this.missingLibraries],
+      pruned: []
+    };
+  }
+  /**
+   * `null` history means Eagle could not be asked, which
+   * `classifyLibraryPresence` turns into `unverified` — nothing gets flagged.
+   */
+  async findMissingLibraries(history) {
+    const present = /* @__PURE__ */ new Set();
+    await Promise.all(this.settings.libraries.map(async (library) => {
+      if (await this.pathExists(library.path))
+        present.add(normalizeLibraryPath(library.path));
+    }));
+    return missingLibraryPaths(
+      this.settings.libraries,
+      history,
+      (path) => present.has(normalizeLibraryPath(path))
+    );
+  }
+  /** Drop a stored profile, plus any setting that pointed at it. */
+  forgetLibraryProfile(libraryPath) {
+    const target = normalizeLibraryPath(libraryPath);
+    this.settings.libraries = removeLibraryProfile(this.settings.libraries, target);
+    this.missingLibraries = this.missingLibraries.filter((path) => path !== target);
+    if (normalizeLibraryPath(this.settings.defaultLibraryPath) === target) {
+      this.settings.defaultLibraryPath = "";
+    }
+  }
+  /** Settings-tab action: remove one library the user no longer wants listed. */
+  async removeLibrary(libraryPath) {
+    this.forgetLibraryProfile(libraryPath);
+    await this.saveSettings();
+  }
+  /** Settings-tab action: remove every library the last scan found missing. */
+  async removeMissingLibraries() {
+    const targets = [...this.missingLibraries];
+    for (const path of targets)
+      this.forgetLibraryProfile(path);
+    await this.saveSettings();
+    return targets.length;
   }
   /**
    * Folders of an arbitrary library. Eagle can only report the open one, so this

@@ -10,6 +10,9 @@ import {
 	resolveDefaultFolder,
 	libraryProfileFor,
 	upsertLibraryProfile,
+	removeLibraryProfile,
+	classifyLibraryPresence,
+	missingLibraryPaths,
 	parseEagleReferences,
 	groupReferencesByLibrary,
 } from '../src/eagle-library.ts';
@@ -254,4 +257,60 @@ test('references group by library, with unknown ones under an empty key', () => 
 
 test('parseEagleReferences returns nothing for a note with no Eagle content', () => {
 	assert.deepEqual(parseEagleReferences('# Plain\n\n![local](attachments/x.png)\n'), []);
+});
+
+// --- missing-library detection -------------------------------------------------
+
+function profile(path: string, defaultFolderId = ''): EagleLibraryProfile {
+	return { path, name: libraryNameFromPath(path), defaultFolderId, defaultFolderPath: '' };
+}
+
+const RENAMED = '/Users/y/YHN/Yohan Koo Library.library';
+const LIVE = '/Users/y/YHN/Personal Library.library';
+const OFFLINE = '/Volumes/Archive/Shots.library';
+
+test('removeLibraryProfile drops the match and leaves the rest untouched', () => {
+	const before = [profile(RENAMED), profile(LIVE)];
+	const after = removeLibraryProfile(before, RENAMED);
+	assert.deepEqual(after.map(p => p.path), [LIVE]);
+	assert.equal(before.length, 2, 'input array must not be mutated');
+});
+
+test('removeLibraryProfile ignores a trailing separator and an unknown path', () => {
+	assert.deepEqual(removeLibraryProfile([profile(LIVE)], `${LIVE}/`).length, 0);
+	assert.deepEqual(removeLibraryProfile([profile(LIVE)], RENAMED).length, 1);
+});
+
+test('a library is missing only when Eagle forgot it AND it is off disk', () => {
+	assert.equal(classifyLibraryPresence({ inEagleHistory: false, existsOnDisk: false }), 'missing');
+	assert.equal(classifyLibraryPresence({ inEagleHistory: true, existsOnDisk: true }), 'present');
+});
+
+test('an unmounted volume Eagle still remembers is present, not missing', () => {
+	assert.equal(classifyLibraryPresence({ inEagleHistory: true, existsOnDisk: false }), 'present');
+});
+
+test('a library on disk that Eagle has not opened yet is present', () => {
+	assert.equal(classifyLibraryPresence({ inEagleHistory: false, existsOnDisk: true }), 'present');
+});
+
+test('nothing is judged when Eagle could not be asked', () => {
+	assert.equal(classifyLibraryPresence({ inEagleHistory: null, existsOnDisk: false }), 'unverified');
+	assert.deepEqual(missingLibraryPaths([profile(RENAMED)], null, () => false), []);
+});
+
+test('missingLibraryPaths reports only the renamed library', () => {
+	const libraries = [profile(RENAMED), profile(LIVE), profile(OFFLINE)];
+	const onDisk = new Set([LIVE]);
+	const missing = missingLibraryPaths(
+		libraries,
+		[LIVE, OFFLINE],           // Eagle still remembers the unmounted volume
+		path => onDisk.has(path)
+	);
+	assert.deepEqual(missing, [RENAMED]);
+});
+
+test('missingLibraryPaths matches history entries that carry a trailing separator', () => {
+	const missing = missingLibraryPaths([profile(LIVE)], [`${LIVE}/`], () => false);
+	assert.deepEqual(missing, []);
 });
